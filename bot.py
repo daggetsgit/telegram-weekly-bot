@@ -944,6 +944,91 @@ def get_gemini_summary_prompt(chat_title: str, days: int = 7) -> str:
 """
 
 
+
+def get_friendly_summary_prompt(chat_title: str, days: int = 7) -> str:
+    return f"""Ты — внимательный и ироничный редактор дружеского Telegram-чата.
+
+Я загрузил ZIP-архив с экспортом Telegram-чата "{chat_title}" за последние {days} дней.
+
+Внутри архива есть:
+- Markdown-файл с сообщениями чата;
+- папка files с вложениями, которые были отправлены в чат.
+
+Твоя задача — проанализировать переписку не как рабочий отчёт, а как живой дружеский чат: с шутками, мемами, планами, внезапными темами, внутренними приколами и общим настроением.
+
+Сделай дружескую выжимку по чату.
+
+Нужный формат ответа:
+
+1. Краткое резюме периода
+В 5–10 предложениях опиши, что происходило в чате: какие темы всплывали, кто что обсуждал, какой был общий вайб.
+
+2. Главные темы недели
+Сгруппируй обсуждения по темам. Для каждой темы укажи:
+- о чём говорили;
+- кто был наиболее активен;
+- чем всё закончилось или осталось ли висеть в воздухе.
+
+3. Планы и договорённости
+Отдельно выпиши всё, что похоже на реальные планы:
+- встретиться;
+- куда-то сходить;
+- что-то посмотреть;
+- кому-то что-то прислать;
+- что-то купить, принести или забронировать;
+- созвониться;
+- вернуться к теме позже.
+
+Если дата, время или место не указаны — так и напиши.
+
+4. Кто что обещал или должен сделать
+Составь мягкий список “обещалки и хвосты”:
+- кто;
+- что обещал, планировал или предлагал;
+- насколько это явно сказано;
+- нужно ли напомнить.
+
+Не превращай это в строгий таск-трекер. Стиль должен быть дружеский.
+
+5. Лучшие шутки, мемы и фразы
+Выдели самые смешные или характерные моменты переписки. Не цитируй огромные куски, только короткие фразы или пересказ. Если юмор завязан на контекст, кратко объясни.
+
+6. Внутренние приколы и повторяющиеся мотивы
+Отметь, какие темы, слова, персонажи, мемы или ситуации повторялись.
+
+7. Файлы, фото и вложения
+Составь список заметных вложений:
+- что это за файл или фото;
+- к какой теме относится;
+- почему оно было отправлено;
+- есть ли с ним какой-то смешной или важный контекст.
+
+Если вложение нельзя прочитать или понять, честно укажи это.
+
+8. Настроение чата
+Опиши общий тон: спокойный, хаотичный, мемный, токсичный, заботливый, сонный, тревожный, праздничный и т.п. Можно с лёгкой иронией, но без грубости.
+
+9. Что можно напомнить друзьям
+Короткий список вещей, которые стоит вернуть в чат:
+- незакрытые планы;
+- забытые договорённости;
+- хорошие темы, к которым можно вернуться;
+- смешные моменты, которые можно обыграть.
+
+10. Суперкороткая версия
+В конце дай 5–7 пунктов “что было в чате, если читать лень”.
+
+Важные правила:
+- Не выдумывай события, обещания или отношения между людьми.
+- Если что-то неясно, помечай как предположение.
+- Не делай выводов о личной жизни, здоровье, финансах или чувствительных темах, если это прямо не обсуждалось и не нужно для понимания переписки.
+- Не пересказывай весь чат подряд.
+- Не пиши слишком официально.
+- Стиль: живой, дружеский, с лёгкой иронией, но без злости и без оскорблений.
+- Если в чате есть чувствительные или личные сообщения, обобщай аккуратно и не выноси лишние детали.
+"""
+
+
 async def summary_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
@@ -1561,6 +1646,57 @@ async def remove_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+async def friendly_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+    if not await ensure_chat_approved(update, context):
+        return
+
+    chat = update.effective_chat
+    chat_title = chat.title or chat.full_name or str(chat.id)
+
+    await update.message.reply_text(
+        get_friendly_summary_prompt(chat_title, 7)
+    )
+
+
+async def friendly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+    if not await ensure_chat_approved(update, context):
+        return
+
+    chat = update.effective_chat
+    chat_title = chat.title or chat.full_name or str(chat.id)
+
+    zip_path, count, copied_files = create_zip_export(
+        7,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+    )
+
+    if count == 0:
+        await update.message.reply_text("За последние 7 дней в этом чате пока нет сохранённых сообщений.")
+        return
+
+    await update.message.reply_document(
+        document=zip_path.open("rb"),
+        filename=zip_path.name,
+        caption=(
+            f"Дружеский пакет для анализа в Gemini.\n"
+            f"Чат: {chat_title}\n"
+            f"Сообщений: {count}\n"
+            f"Файлов: {copied_files}\n\n"
+            f"Следующим сообщением отправлю дружеский промпт для анализа."
+        ),
+    )
+
+    await update.message.reply_text(
+        get_friendly_summary_prompt(chat_title, 7)
+    )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
@@ -1617,6 +1753,8 @@ def main():
     app.add_handler(CommandHandler("remove_chat", remove_chat))
     app.add_handler(CommandHandler("summary_prompt", summary_prompt))
     app.add_handler(CommandHandler("weekly_package", weekly_package))
+    app.add_handler(CommandHandler("friendly_prompt", friendly_prompt))
+    app.add_handler(CommandHandler("friendly_package", friendly_package))
     app.add_handler(CallbackQueryHandler(chat_approval_callback, pattern="^(approve_chat|reject_chat):"))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
