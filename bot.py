@@ -1007,7 +1007,7 @@ def get_private_admin_keyboard():
     )
 
 
-def get_help_text() -> str:
+def get_private_help_text() -> str:
     return """Weekly Work Summary Bot
 
 Что делает бот:
@@ -1069,6 +1069,37 @@ ZIP-экспорт всех чатов за 7 дней.
 """
 
 
+def get_group_help_text() -> str:
+    return """Weekly Work Summary Bot
+
+Этот бот сохраняет сообщения и вложения из подтверждённого рабочего чата и помогает подготовить недельный архив для анализа в Gemini.
+
+Основные команды для текущего чата:
+
+/weekly_package
+ZIP-архив за последние 7 дней + готовый промпт для Gemini.
+
+/export_zip_week
+ZIP-архив текущего чата за последние 7 дней.
+
+/export_zip_today
+ZIP-архив текущего чата за сегодня.
+
+/summary_prompt
+Только промпт для Gemini без архива.
+
+/status
+Статус текущего чата: сколько сообщений и файлов сохранено.
+
+Важно:
+- команды доступны только администратору бота;
+- обычные участники не могут выгружать архивы;
+- данные хранятся только за последние 14 дней;
+- файлы больше 50 MB не скачиваются;
+- новые чаты сохраняются только после подтверждения администратором.
+"""
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
@@ -1078,9 +1109,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat and chat.type == "private":
         reply_markup = get_private_admin_keyboard()
+        help_text = get_private_help_text()
+    else:
+        help_text = get_group_help_text()
 
     await update.message.reply_text(
-        get_help_text(),
+        help_text,
         reply_markup=reply_markup,
     )
 
