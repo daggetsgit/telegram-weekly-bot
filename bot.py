@@ -841,6 +841,124 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
     return export_path, len(rows)
 
 
+
+def get_gemini_summary_prompt(chat_title: str, days: int = 7) -> str:
+    return f"""Ты — аналитик рабочей коммуникации и помощник по управлению задачами.
+
+Я загрузил ZIP-архив с экспортом Telegram-чата "{chat_title}" за последние {days} дней.
+
+Внутри архива есть:
+- Markdown-файл с сообщениями чата;
+- папка files с вложениями, которые были отправлены в чат.
+
+Твоя задача — внимательно проанализировать весь архив: сообщения, подписи к файлам, названия файлов и сами вложения, если они доступны для чтения.
+
+Сделай структурированную выжимку по переписке.
+
+Нужный формат ответа:
+
+1. Краткое резюме периода
+В 5–10 предложениях опиши, что в целом обсуждали, какие были основные события, решения и рабочий контекст.
+
+2. Основные темы обсуждения
+Сгруппируй переписку по темам. Для каждой темы укажи:
+- краткое описание;
+- ключевые сообщения или выводы;
+- связанные файлы, если они есть;
+- текущий статус темы: закрыта / в работе / требует внимания / непонятно.
+
+3. Задачи и поручения
+Составь таблицу:
+- задача;
+- ответственный, если его можно определить;
+- срок, если он был указан или подразумевается;
+- источник/контекст из переписки;
+- статус: новая / в работе / ожидает ответа / выполнена / риск просрочки.
+
+Если ответственный или срок не указаны явно, не выдумывай. Напиши «не указан» или «можно предположить, но требуется подтверждение».
+
+4. Открытые вопросы
+Выдели вопросы, которые обсуждались, но не были закрыты. Для каждого укажи, кто должен ответить или что нужно сделать дальше.
+
+5. Решения и договорённости
+Отдельно перечисли все решения, договорённости и подтверждения, которые были явно зафиксированы в переписке.
+
+6. Риски и проблемные места
+Отметь возможные риски: задержки, неопределённость, отсутствие ответственного, финансовые вопросы, конфликтные моменты, срочные задачи, вопросы, которые могут быть забыты.
+
+7. Файлы и вложения
+Составь список всех важных файлов из архива. Для каждого укажи:
+- название файла;
+- к какой теме относится;
+- что в нём содержится, если файл можно прочитать;
+- какие действия с ним нужны, если это понятно из переписки.
+
+8. Что нужно сделать дальше
+Сформируй короткий список приоритетных следующих шагов на ближайшие дни.
+
+9. Очень короткая executive summary
+В конце дай краткую версию на 5–7 пунктов, которую можно быстро отправить руководителю или команде.
+
+Важные правила:
+- Не выдумывай факты, имена, сроки или решения.
+- Если информация неочевидна, помечай её как предположение.
+- Не пересказывай всю переписку подряд, а группируй информацию по смыслу.
+- Сохраняй деловой, нейтральный стиль.
+- Если в архиве есть персональные данные или чувствительная информация, не распространяй их без необходимости, а используй только для понимания контекста задач.
+- Если какие-то вложения не удалось прочитать, явно укажи это в разделе файлов.
+"""
+
+
+async def summary_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+    if not await ensure_chat_approved(update, context):
+        return
+
+    chat = update.effective_chat
+    chat_title = chat.title or chat.full_name or str(chat.id)
+
+    await update.message.reply_text(
+        get_gemini_summary_prompt(chat_title, 7)
+    )
+
+
+async def weekly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+    if not await ensure_chat_approved(update, context):
+        return
+
+    chat = update.effective_chat
+    chat_title = chat.title or chat.full_name or str(chat.id)
+
+    zip_path, count, copied_files = create_zip_export(
+        7,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+    )
+
+    if count == 0:
+        await update.message.reply_text("За последние 7 дней в этом чате пока нет сохранённых сообщений.")
+        return
+
+    await update.message.reply_document(
+        document=zip_path.open("rb"),
+        filename=zip_path.name,
+        caption=(
+            f"Недельный пакет для анализа в Gemini.\n"
+            f"Чат: {chat_title}\n"
+            f"Сообщений: {count}\n"
+            f"Файлов: {copied_files}\n\n"
+            f"Следующим сообщением отправлю промпт для анализа."
+        ),
+    )
+
+    await update.message.reply_text(
+        get_gemini_summary_prompt(chat_title, 7)
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Бот работает. Я сохраняю сообщения и вложения для недельного архива."
@@ -1328,6 +1446,8 @@ def main():
     app.add_handler(CommandHandler("approve_chat", approve_chat))
     app.add_handler(CommandHandler("reject_chat", reject_chat))
     app.add_handler(CommandHandler("remove_chat", remove_chat))
+    app.add_handler(CommandHandler("summary_prompt", summary_prompt))
+    app.add_handler(CommandHandler("weekly_package", weekly_package))
     app.add_handler(CallbackQueryHandler(chat_approval_callback, pattern="^(approve_chat|reject_chat):"))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
@@ -1350,6 +1470,8 @@ def main():
     print("/approve_chat <chat_id> — подтвердить чат")
     print("/reject_chat <chat_id> — отклонить чат")
     print("/remove_chat <chat_id> — отключить чат")
+    print("/summary_prompt — промпт для Gemini")
+    print("/weekly_package — ZIP за неделю + промпт для Gemini")
 
     app.run_polling(drop_pending_updates=True)
 
