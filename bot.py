@@ -374,6 +374,26 @@ def register_chat_if_needed(chat, status: str = "pending"):
     conn.close()
 
 
+
+def delete_chat_record(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        DELETE FROM chats
+        WHERE chat_id = ?
+        """,
+        (chat_id,),
+    )
+
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+
+    return deleted > 0
+
+
 def set_chat_status(chat_id: int, status: str, approved_by_user_id=None):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -1243,13 +1263,16 @@ async def remove_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("chat_id должен быть числом.")
         return
 
-    ok = set_chat_status(chat_id, "rejected", None)
+    ok = delete_chat_record(chat_id)
 
     if not ok:
         await update.message.reply_text("Чат не найден.")
         return
 
-    await update.message.reply_text(f"Чат {chat_id} удалён из разрешённых. Новые сообщения сохраняться не будут.")
+    await update.message.reply_text(
+        f"Чат {chat_id} удалён из списка. "
+        "При следующем сообщении бот снова запросит подтверждение администратора."
+    )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
