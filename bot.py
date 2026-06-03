@@ -103,6 +103,21 @@ def init_db():
         """
     )
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chats (
+            chat_id INTEGER PRIMARY KEY,
+            chat_title TEXT,
+            chat_type TEXT,
+            status TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            approved_at TEXT,
+            approved_by_user_id INTEGER,
+            last_seen_at TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -289,6 +304,182 @@ def save_message(message, file_info):
     conn.commit()
     conn.close()
 
+
+
+
+def get_chat_status(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT status
+        FROM chats
+        WHERE chat_id = ?
+        """,
+        (chat_id,),
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    return row[0] if row else None
+
+
+def register_chat_if_needed(chat, status: str = "pending"):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO chats (
+            chat_id,
+            chat_title,
+            chat_type,
+            status,
+            requested_at,
+            last_seen_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            chat.id,
+            chat.title or chat.full_name or str(chat.id),
+            chat.type,
+            status,
+            now,
+            now,
+        ),
+    )
+
+    cur.execute(
+        """
+        UPDATE chats
+        SET chat_title = ?,
+            chat_type = ?,
+            last_seen_at = ?
+        WHERE chat_id = ?
+        """,
+        (
+            chat.title or chat.full_name or str(chat.id),
+            chat.type,
+            now,
+            chat.id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def set_chat_status(chat_id: int, status: str, approved_by_user_id=None):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    cur.execute(
+        """
+        UPDATE chats
+        SET status = ?,
+            approved_at = ?,
+            approved_by_user_id = ?
+        WHERE chat_id = ?
+        """,
+        (
+            status,
+            now if status == "approved" else None,
+            approved_by_user_id if status == "approved" else None,
+            chat_id,
+        ),
+    )
+
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+
+    return changed > 0
+
+
+def list_chats_by_status(status: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT chat_id, chat_title, chat_type, requested_at, last_seen_at
+        FROM chats
+        WHERE status = ?
+        ORDER BY last_seen_at DESC
+        """,
+        (status,),
+    )
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return rows
+
+
+async def notify_admins_about_pending_chat(context: ContextTypes.DEFAULT_TYPE, chat):
+    chat_title = chat.title or chat.full_name or str(chat.id)
+
+    text = (
+        "Бота добавили в новый чат или он увидел новый чат.\\n\\n"
+        f"Название: {chat_title}\\n"
+        f"Chat ID: {chat.id}\\n"
+        f"Тип: {chat.type}\\n\\n"
+        "Пока чат не подтверждён, сообщения и файлы из него не сохраняются.\\n\\n"
+        f"Подтвердить:\\n/approve_chat {chat.id}\\n\\n"
+        f"Отклонить:\\n/reject_chat {chat.id}"
+    )
+
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text)
+        except Exception as e:
+            print(f"Could not notify admin {admin_id} about chat {chat.id}: {e}")
+
+
+async def ensure_chat_approved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+
+    if not chat:
+        return False
+
+    # Personal chat with admin is always allowed for commands/testing.
+    if chat.type == "private" and is_admin(update):
+        register_chat_if_needed(chat, status="approved")
+        return True
+
+    status = get_chat_status(chat.id)
+
+    if status is None:
+        register_chat_if_needed(chat, status="pending")
+        await notify_admins_about_pending_chat(context, chat)
+
+        if update.message:
+            await update.message.reply_text(
+                "Бот ожидает подтверждения администратора. "
+                "Сообщения и файлы этого чата пока не сохраняются."
+            )
+
+        return False
+
+    register_chat_if_needed(chat, status=status)
+
+    if status == "approved":
+        return True
+
+    if update.message and status == "pending":
+        await update.message.reply_text(
+            "Бот ожидает подтверждения администратора. "
+            "Сообщения и файлы этого чата пока не сохраняются."
+        )
+
+    return False
 
 
 def cleanup_old_data(retention_days: int = RETENTION_DAYS):
@@ -624,6 +815,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
+    if not await ensure_chat_approved(update, context):
+        return
 
     chat = update.effective_chat
     total_messages, week_messages, total_files = get_stats(chat.id)
@@ -654,6 +847,8 @@ async def global_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def export_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
+    if not await ensure_chat_approved(update, context):
+        return
 
     chat = update.effective_chat
     export_path, count = export_last_days(
@@ -675,6 +870,8 @@ async def export_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def export_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
+        return
+    if not await ensure_chat_approved(update, context):
         return
 
     chat = update.effective_chat
@@ -733,6 +930,8 @@ async def export_all_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def export_zip_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
+    if not await ensure_chat_approved(update, context):
+        return
 
     chat = update.effective_chat
     zip_path, count, copied_files = create_zip_export(
@@ -758,6 +957,8 @@ async def export_zip_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def export_zip_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
+        return
+    if not await ensure_chat_approved(update, context):
         return
 
     chat = update.effective_chat
@@ -824,10 +1025,151 @@ async def export_zip_all_today(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+
+async def pending_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    rows = list_chats_by_status("pending")
+
+    if not rows:
+        await update.message.reply_text("Нет чатов, ожидающих подтверждения.")
+        return
+
+    lines = ["Чаты, ожидающие подтверждения:\n"]
+
+    for chat_id, chat_title, chat_type, requested_at, last_seen_at in rows:
+        lines.append(
+            f"Название: {chat_title}\n"
+            f"Chat ID: {chat_id}\n"
+            f"Тип: {chat_type}\n"
+            f"Подтвердить: /approve_chat {chat_id}\n"
+            f"Отклонить: /reject_chat {chat_id}\n"
+        )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def approved_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    rows = list_chats_by_status("approved")
+
+    if not rows:
+        await update.message.reply_text("Нет подтверждённых чатов.")
+        return
+
+    lines = ["Подтверждённые чаты:\n"]
+
+    for chat_id, chat_title, chat_type, requested_at, last_seen_at in rows:
+        lines.append(
+            f"Название: {chat_title}\n"
+            f"Chat ID: {chat_id}\n"
+            f"Тип: {chat_type}\n"
+            f"Отключить: /remove_chat {chat_id}\n"
+        )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def approve_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Укажи chat_id: /approve_chat -1001234567890")
+        return
+
+    try:
+        chat_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("chat_id должен быть числом.")
+        return
+
+    ok = set_chat_status(chat_id, "approved", update.effective_user.id)
+
+    if not ok:
+        await update.message.reply_text(
+            "Чат не найден в списке pending. "
+            "Сначала бот должен увидеть этот чат."
+        )
+        return
+
+    await update.message.reply_text(f"Чат {chat_id} подтверждён. Теперь бот будет сохранять сообщения из него.")
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Чат подтверждён администратором. Теперь бот будет сохранять сообщения и файлы для архива."
+        )
+    except Exception as e:
+        print(f"Could not send approval message to chat {chat_id}: {e}")
+
+
+async def reject_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Укажи chat_id: /reject_chat -1001234567890")
+        return
+
+    try:
+        chat_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("chat_id должен быть числом.")
+        return
+
+    ok = set_chat_status(chat_id, "rejected", None)
+
+    if not ok:
+        await update.message.reply_text(
+            "Чат не найден. Сначала бот должен увидеть этот чат."
+        )
+        return
+
+    await update.message.reply_text(f"Чат {chat_id} отклонён. Бот не будет сохранять сообщения из него.")
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Чат не подтверждён администратором. Бот не будет сохранять сообщения и файлы из этого чата."
+        )
+    except Exception as e:
+        print(f"Could not send rejection message to chat {chat_id}: {e}")
+
+
+async def remove_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Укажи chat_id: /remove_chat -1001234567890")
+        return
+
+    try:
+        chat_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("chat_id должен быть числом.")
+        return
+
+    ok = set_chat_status(chat_id, "rejected", None)
+
+    if not ok:
+        await update.message.reply_text("Чат не найден.")
+        return
+
+    await update.message.reply_text(f"Чат {chat_id} удалён из разрешённых. Новые сообщения сохраняться не будут.")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
     if not message:
+        return
+
+    if not await ensure_chat_approved(update, context):
         return
 
     try:
@@ -869,6 +1211,11 @@ def main():
     app.add_handler(CommandHandler("export_zip_today", export_zip_today))
     app.add_handler(CommandHandler("export_zip_all_week", export_zip_all_week))
     app.add_handler(CommandHandler("export_zip_all_today", export_zip_all_today))
+    app.add_handler(CommandHandler("pending_chats", pending_chats))
+    app.add_handler(CommandHandler("approved_chats", approved_chats))
+    app.add_handler(CommandHandler("approve_chat", approve_chat))
+    app.add_handler(CommandHandler("reject_chat", reject_chat))
+    app.add_handler(CommandHandler("remove_chat", remove_chat))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
@@ -885,6 +1232,11 @@ def main():
     print("/export_zip_week — ZIP текущего чата за 7 дней")
     print("/export_zip_all_today — ZIP всех чатов за сегодня")
     print("/export_zip_all_week — ZIP всех чатов за 7 дней")
+    print("/pending_chats — чаты на подтверждение")
+    print("/approved_chats — подтверждённые чаты")
+    print("/approve_chat <chat_id> — подтвердить чат")
+    print("/reject_chat <chat_id> — отклонить чат")
+    print("/remove_chat <chat_id> — отключить чат")
 
     app.run_polling(drop_pending_updates=True)
 
