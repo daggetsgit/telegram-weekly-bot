@@ -22,6 +22,9 @@ ADMIN_USER_IDS = {
     if x.strip().isdigit()
 }
 
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 EXPORT_DIR = DATA_DIR / "exports"
@@ -97,6 +100,8 @@ def init_db():
             file_mime_type TEXT,
             file_size INTEGER,
             file_path TEXT,
+            file_skipped INTEGER DEFAULT 0,
+            file_skip_reason TEXT,
             created_at TEXT NOT NULL,
             UNIQUE(chat_id, message_id)
         )
@@ -117,6 +122,16 @@ def init_db():
         )
         """
     )
+
+    # Lightweight migrations for existing SQLite databases
+    cur.execute("PRAGMA table_info(messages)")
+    existing_columns = {row[1] for row in cur.fetchall()}
+
+    if "file_skipped" not in existing_columns:
+        cur.execute("ALTER TABLE messages ADD COLUMN file_skipped INTEGER DEFAULT 0")
+
+    if "file_skip_reason" not in existing_columns:
+        cur.execute("ALTER TABLE messages ADD COLUMN file_skip_reason TEXT")
 
     conn.commit()
     conn.close()
@@ -212,6 +227,8 @@ async def download_attachment(message, context: ContextTypes.DEFAULT_TYPE):
             "file_mime_type": None,
             "file_size": None,
             "file_path": None,
+            "file_skipped": 0,
+            "file_skip_reason": None,
         }
 
     date_folder = message.date.astimezone().strftime("%Y-%m-%d")
@@ -238,6 +255,8 @@ async def download_attachment(message, context: ContextTypes.DEFAULT_TYPE):
         "file_mime_type": mime_type,
         "file_size": file_size,
         "file_path": str(relative_path),
+        "file_skipped": 0,
+        "file_skip_reason": None,
     }
 
 
@@ -275,9 +294,11 @@ def save_message(message, file_info):
             file_mime_type,
             file_size,
             file_path,
+            file_skipped,
+            file_skip_reason,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             message.chat.id,
@@ -297,6 +318,8 @@ def save_message(message, file_info):
             file_info.get("file_mime_type"),
             file_info.get("file_size"),
             file_info.get("file_path"),
+            file_info.get("file_skipped", 0),
+            file_info.get("file_skip_reason"),
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -737,7 +760,9 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
                 file_name,
                 file_mime_type,
                 file_size,
-                file_path
+                file_path,
+                file_skipped,
+                file_skip_reason
             FROM messages
             WHERE date_utc >= ?
             ORDER BY date_utc ASC
@@ -760,7 +785,9 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
                 file_name,
                 file_mime_type,
                 file_size,
-                file_path
+                file_path,
+                file_skipped,
+                file_skip_reason
             FROM messages
             WHERE chat_id = ? AND date_utc >= ?
             ORDER BY date_utc ASC
@@ -798,6 +825,8 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
                 file_mime_type,
                 file_size,
                 file_path,
+                file_skipped,
+                file_skip_reason,
             ) = row
 
             dt = datetime.fromisoformat(date_utc)
@@ -825,6 +854,12 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
                 f.write(f"- File MIME type: `{file_mime_type}`\n")
                 f.write(f"- File size: `{file_size}` bytes\n")
                 f.write(f"- File path: `{file_path}`\n")
+            elif file_skipped:
+                f.write(f"- File name: `{file_name}`\n")
+                f.write(f"- File MIME type: `{file_mime_type}`\n")
+                f.write(f"- File size: `{file_size}` bytes\n")
+                f.write(f"- File skipped: `yes`\n")
+                f.write(f"- Skip reason: `{file_skip_reason}`\n")
 
             content = text or caption or ""
 
@@ -1454,6 +1489,7 @@ def main():
 
     print("Бот запущен. Нажми Ctrl+C для остановки.")
     print(f"Хранение данных: последние {RETENTION_DAYS} дней")
+    print(f"Максимальный размер файла: {MAX_FILE_SIZE_MB} MB")
     print("Команды:")
     print("/status — статус текущего чата")
     print("/global_status — статус всех чатов")
