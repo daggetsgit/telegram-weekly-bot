@@ -27,6 +27,7 @@ DATA_DIR = BASE_DIR / "data"
 EXPORT_DIR = DATA_DIR / "exports"
 FILES_DIR = DATA_DIR / "files"
 DB_PATH = DATA_DIR / "messages.db"
+RETENTION_DAYS = 14
 
 DATA_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
@@ -287,6 +288,66 @@ def save_message(message, file_info):
 
     conn.commit()
     conn.close()
+
+
+
+def cleanup_old_data(retention_days: int = RETENTION_DAYS):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT file_path
+        FROM messages
+        WHERE date_utc < ? AND file_path IS NOT NULL
+        """,
+        (cutoff.isoformat(),),
+    )
+
+    old_files = [row[0] for row in cur.fetchall()]
+
+    cur.execute(
+        """
+        DELETE FROM messages
+        WHERE date_utc < ?
+        """,
+        (cutoff.isoformat(),),
+    )
+
+    deleted_messages = cur.rowcount
+
+    conn.commit()
+    conn.close()
+
+    deleted_files = 0
+
+    for relative_file_path in old_files:
+        file_path = BASE_DIR / relative_file_path
+
+        try:
+            if file_path.exists() and file_path.is_file():
+                file_path.unlink()
+                deleted_files += 1
+        except Exception as e:
+            print(f"Could not delete old file {file_path}: {e}")
+
+    # Remove empty date folders inside data/files
+    if FILES_DIR.exists():
+        for folder in sorted(FILES_DIR.iterdir(), reverse=True):
+            if folder.is_dir():
+                try:
+                    if not any(folder.iterdir()):
+                        folder.rmdir()
+                except Exception:
+                    pass
+
+    if deleted_messages or deleted_files:
+        print(
+            f"Cleanup complete: deleted_messages={deleted_messages}, "
+            f"deleted_files={deleted_files}, retention_days={retention_days}"
+        )
 
 
 def get_stats(chat_id=None):
@@ -772,6 +833,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file_info = await download_attachment(message, context)
         save_message(message, file_info)
+        cleanup_old_data()
 
         user = message.from_user
         author = user.full_name if user else "unknown"
@@ -792,6 +854,7 @@ def main():
         raise RuntimeError("Не найден TELEGRAM_BOT_TOKEN в файле .env")
 
     init_db()
+    cleanup_old_data()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -810,6 +873,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
     print("Бот запущен. Нажми Ctrl+C для остановки.")
+    print(f"Хранение данных: последние {RETENTION_DAYS} дней")
     print("Команды:")
     print("/status — статус текущего чата")
     print("/global_status — статус всех чатов")
