@@ -7,8 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 
 load_dotenv()
@@ -426,19 +426,34 @@ def list_chats_by_status(status: str):
 async def notify_admins_about_pending_chat(context: ContextTypes.DEFAULT_TYPE, chat):
     chat_title = chat.title or chat.full_name or str(chat.id)
 
-    text = (
-        "Бота добавили в новый чат или он увидел новый чат.\\n\\n"
-        f"Название: {chat_title}\\n"
-        f"Chat ID: {chat.id}\\n"
-        f"Тип: {chat.type}\\n\\n"
-        "Пока чат не подтверждён, сообщения и файлы из него не сохраняются.\\n\\n"
-        f"Подтвердить:\\n/approve_chat {chat.id}\\n\\n"
-        f"Отклонить:\\n/reject_chat {chat.id}"
+    message_text = (
+        "Бота добавили в новый чат или он увидел новый чат.\n\n"
+        f"Название: {chat_title}\n"
+        f"Chat ID: {chat.id}\n"
+        f"Тип: {chat.type}\n\n"
+        "Пока чат не подтверждён, сообщения и файлы из него не сохраняются."
     )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Подтвердить",
+                callback_data=f"approve_chat:{chat.id}"
+            ),
+            InlineKeyboardButton(
+                "❌ Отклонить",
+                callback_data=f"reject_chat:{chat.id}"
+            ),
+        ]
+    ])
 
     for admin_id in ADMIN_USER_IDS:
         try:
-            await context.bot.send_message(chat_id=admin_id, text=text)
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=message_text,
+                reply_markup=keyboard,
+            )
         except Exception as e:
             print(f"Could not notify admin {admin_id} about chat {chat.id}: {e}")
 
@@ -1026,6 +1041,80 @@ async def export_zip_all_today(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 
+async def chat_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+
+    if not query:
+        return
+
+    await query.answer()
+
+    user = query.from_user
+
+    if not user or user.id not in ADMIN_USER_IDS:
+        await query.edit_message_text("Эта кнопка доступна только администратору бота.")
+        return
+
+    data = query.data or ""
+
+    if ":" not in data:
+        await query.edit_message_text("Некорректная команда.")
+        return
+
+    action, chat_id_raw = data.split(":", 1)
+
+    try:
+        chat_id = int(chat_id_raw)
+    except ValueError:
+        await query.edit_message_text("Некорректный chat_id.")
+        return
+
+    if action == "approve_chat":
+        ok = set_chat_status(chat_id, "approved", user.id)
+
+        if not ok:
+            await query.edit_message_text(
+                "Чат не найден в списке pending. Возможно, он уже был обработан."
+            )
+            return
+
+        await query.edit_message_text(
+            f"✅ Чат {chat_id} подтверждён. Теперь бот будет сохранять сообщения и файлы из него."
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Чат подтверждён администратором. Теперь бот будет сохранять сообщения и файлы для архива."
+            )
+        except Exception as e:
+            print(f"Could not send approval message to chat {chat_id}: {e}")
+
+    elif action == "reject_chat":
+        ok = set_chat_status(chat_id, "rejected", None)
+
+        if not ok:
+            await query.edit_message_text(
+                "Чат не найден. Возможно, он уже был обработан."
+            )
+            return
+
+        await query.edit_message_text(
+            f"❌ Чат {chat_id} отклонён. Бот не будет сохранять сообщения и файлы из него."
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Чат не подтверждён администратором. Бот не будет сохранять сообщения и файлы из этого чата."
+            )
+        except Exception as e:
+            print(f"Could not send rejection message to chat {chat_id}: {e}")
+
+    else:
+        await query.edit_message_text("Неизвестное действие.")
+
+
 async def pending_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
@@ -1216,6 +1305,7 @@ def main():
     app.add_handler(CommandHandler("approve_chat", approve_chat))
     app.add_handler(CommandHandler("reject_chat", reject_chat))
     app.add_handler(CommandHandler("remove_chat", remove_chat))
+    app.add_handler(CallbackQueryHandler(chat_approval_callback, pattern="^(approve_chat|reject_chat):"))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
