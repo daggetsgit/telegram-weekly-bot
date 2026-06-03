@@ -599,6 +599,55 @@ def cleanup_old_data(retention_days: int = RETENTION_DAYS):
         )
 
 
+
+def get_health_data():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM messages")
+    total_messages = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL")
+    saved_files = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM messages WHERE file_skipped = 1")
+    skipped_files = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM chats WHERE status = 'approved'")
+    approved_chats = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM chats WHERE status = 'pending'")
+    pending_chats = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM chats WHERE status = 'rejected'")
+    rejected_chats = cur.fetchone()[0]
+
+    conn.close()
+
+    db_exists = DB_PATH.exists()
+    data_dir_exists = DATA_DIR.exists()
+    files_dir_exists = FILES_DIR.exists()
+    exports_dir_exists = EXPORT_DIR.exists()
+
+    return {
+        "db_exists": db_exists,
+        "data_dir_exists": data_dir_exists,
+        "files_dir_exists": files_dir_exists,
+        "exports_dir_exists": exports_dir_exists,
+        "total_messages": total_messages,
+        "saved_files": saved_files,
+        "skipped_files": skipped_files,
+        "approved_chats": approved_chats,
+        "pending_chats": pending_chats,
+        "rejected_chats": rejected_chats,
+        "base_dir": str(BASE_DIR),
+        "data_dir": str(DATA_DIR),
+        "files_dir": str(FILES_DIR),
+        "exports_dir": str(EXPORT_DIR),
+        "db_path": str(DB_PATH),
+    }
+
+
 def get_stats(chat_id=None):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -1083,7 +1132,8 @@ async def weekly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def get_private_admin_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["/help", "/global_status"],
+            ["/help", "/health"],
+            ["/global_status"],
             ["/pending_chats", "/approved_chats"],
         ],
         resize_keyboard=True,
@@ -1138,6 +1188,9 @@ def get_private_help_text() -> str:
 Удалить чат из списка известных. При следующем сообщении бот снова запросит подтверждение.
 
 Глобальные команды:
+
+/health
+Технический статус бота: хранение, база, файлы, чаты.
 
 /global_status
 Общий статус по всем чатам.
@@ -1215,6 +1268,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Бот работает. Я сохраняю сообщения и вложения из подтверждённых чатов для недельного архива.\n\n"
         "Напиши /help, чтобы посмотреть доступные команды.",
         reply_markup=reply_markup,
+    )
+
+
+
+async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    data = get_health_data()
+
+    await update.message.reply_text(
+        "Bot health\n\n"
+        "Status: running\n"
+        f"Retention: {RETENTION_DAYS} days\n"
+        f"Max file size: {MAX_FILE_SIZE_MB} MB\n\n"
+        "Storage:\n"
+        f"Base dir: {data['base_dir']}\n"
+        f"Data dir: {data['data_dir']}\n"
+        f"Files dir exists: {data['files_dir_exists']}\n"
+        f"Exports dir exists: {data['exports_dir_exists']}\n"
+        f"Database exists: {data['db_exists']}\n\n"
+        "Data:\n"
+        f"Saved messages: {data['total_messages']}\n"
+        f"Saved files: {data['saved_files']}\n"
+        f"Skipped files: {data['skipped_files']}\n\n"
+        "Chats:\n"
+        f"Approved: {data['approved_chats']}\n"
+        f"Pending: {data['pending_chats']}\n"
+        f"Rejected: {data['rejected_chats']}"
     )
 
 
@@ -1736,6 +1818,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("global_status", global_status))
     app.add_handler(CommandHandler("export_week", export_week))
@@ -1764,6 +1847,7 @@ def main():
     print(f"Максимальный размер файла: {MAX_FILE_SIZE_MB} MB")
     print("Команды:")
     print("/help — справка и меню в личном чате")
+    print("/health — технический статус бота")
     print("/status — статус текущего чата")
     print("/global_status — статус всех чатов")
     print("/export_today — экспорт текущего чата за сегодня")
