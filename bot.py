@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 
@@ -994,9 +994,108 @@ async def weekly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+def get_private_admin_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            ["/help", "/global_status"],
+            ["/pending_chats", "/approved_chats"],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        selective=True,
+    )
+
+
+def get_help_text() -> str:
+    return """Weekly Work Summary Bot
+
+Что делает бот:
+- сохраняет сообщения и вложения из подтверждённых рабочих Telegram-чатов;
+- формирует Markdown и ZIP-архивы;
+- помогает подготовить архив для анализа в Gemini;
+- хранит данные только за последние 14 дней;
+- не сохраняет файлы больше 50 MB;
+- новые чаты начинает сохранять только после подтверждения администратором.
+
+Основной рабочий сценарий в группе:
+
+/weekly_package
+Отправляет ZIP-архив за последние 7 дней и готовый промпт для Gemini.
+
+/export_zip_week
+Отправляет ZIP-архив текущего чата за последние 7 дней.
+
+/export_zip_today
+Отправляет ZIP-архив текущего чата за сегодня.
+
+/summary_prompt
+Отправляет только промпт для Gemini без архива.
+
+/status
+Показывает статус текущего чата: сколько сообщений и файлов сохранено.
+
+Управление чатами:
+
+/pending_chats
+Показывает чаты, ожидающие подтверждения.
+
+/approved_chats
+Показывает подтверждённые чаты.
+
+/approve_chat <chat_id>
+Подтвердить чат вручную.
+
+/reject_chat <chat_id>
+Отклонить чат вручную.
+
+/remove_chat <chat_id>
+Удалить чат из списка известных. При следующем сообщении бот снова запросит подтверждение.
+
+Глобальные команды:
+
+/global_status
+Общий статус по всем чатам.
+
+/export_all_week
+Markdown-экспорт всех чатов за 7 дней.
+
+/export_zip_all_week
+ZIP-экспорт всех чатов за 7 дней.
+
+Доступ:
+Команды экспорта и управления доступны только администратору бота.
+Обычные участники не могут выгружать архивы.
+"""
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    chat = update.effective_chat
+    reply_markup = None
+
+    if chat and chat.type == "private":
+        reply_markup = get_private_admin_keyboard()
+
     await update.message.reply_text(
-        "Бот работает. Я сохраняю сообщения и вложения для недельного архива."
+        get_help_text(),
+        reply_markup=reply_markup,
+    )
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    reply_markup = None
+
+    if chat and chat.type == "private" and is_admin(update):
+        reply_markup = get_private_admin_keyboard()
+
+    await update.message.reply_text(
+        "Бот работает. Я сохраняю сообщения и вложения из подтверждённых чатов для недельного архива.\n\n"
+        "Напиши /help, чтобы посмотреть доступные команды.",
+        reply_markup=reply_markup,
     )
 
 
@@ -1466,6 +1565,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("global_status", global_status))
     app.add_handler(CommandHandler("export_week", export_week))
@@ -1491,6 +1591,7 @@ def main():
     print(f"Хранение данных: последние {RETENTION_DAYS} дней")
     print(f"Максимальный размер файла: {MAX_FILE_SIZE_MB} MB")
     print("Команды:")
+    print("/help — справка и меню в личном чате")
     print("/status — статус текущего чата")
     print("/global_status — статус всех чатов")
     print("/export_today — экспорт текущего чата за сегодня")
