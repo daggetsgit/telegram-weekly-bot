@@ -9,6 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.error import TelegramError, TimedOut
 
 
 load_dotenv()
@@ -24,6 +25,9 @@ ADMIN_USER_IDS = {
 
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+MAX_TELEGRAM_SEND_SIZE_MB = int(os.getenv("MAX_TELEGRAM_SEND_SIZE_MB", "49"))
+MAX_TELEGRAM_SEND_SIZE_BYTES = MAX_TELEGRAM_SEND_SIZE_MB * 1024 * 1024
+TELEGRAM_SEND_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_SEND_TIMEOUT_SECONDS", "180"))
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -787,6 +791,84 @@ def create_zip_export(days: int = 7, chat_id=None, chat_title_for_filename=None)
     return zip_path, count, copied_files
 
 
+
+def human_file_size(size_bytes: int) -> str:
+    if size_bytes is None:
+        return "unknown"
+
+    size = float(size_bytes)
+
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+
+    return f"{size_bytes} B"
+
+
+async def send_document_safely(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: Path, caption: str = None) -> bool:
+    if not file_path.exists():
+        await update.message.reply_text(
+            f"Не удалось отправить файл: файл не найден на сервере.\n\n{file_path.name}"
+        )
+        return False
+
+    file_size = file_path.stat().st_size
+
+    if file_size > MAX_TELEGRAM_SEND_SIZE_BYTES:
+        await update.message.reply_text(
+            "Файл сформирован, но он слишком большой для стабильной отправки через Telegram.\n\n"
+            f"Файл: {file_path.name}\n"
+            f"Размер: {human_file_size(file_size)}\n"
+            f"Лимит отправки: {MAX_TELEGRAM_SEND_SIZE_MB} MB\n\n"
+            "Попробуй Markdown-экспорт командой /export_week или сделаем отдельный облегчённый ZIP без тяжёлых вложений."
+        )
+        return False
+
+    try:
+        with file_path.open("rb") as f:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=f,
+                filename=file_path.name,
+                caption=caption,
+                reply_to_message_id=update.message.message_id if update.message else None,
+                connect_timeout=TELEGRAM_SEND_TIMEOUT_SECONDS,
+                read_timeout=TELEGRAM_SEND_TIMEOUT_SECONDS,
+                write_timeout=TELEGRAM_SEND_TIMEOUT_SECONDS,
+                pool_timeout=TELEGRAM_SEND_TIMEOUT_SECONDS,
+            )
+
+        return True
+
+    except TimedOut:
+        await update.message.reply_text(
+            "Telegram не успел принять файл и оборвал отправку по таймауту.\n\n"
+            f"Файл: {file_path.name}\n"
+            f"Размер: {human_file_size(file_size)}\n\n"
+            "Можно попробовать ещё раз позже или сделать облегчённый ZIP без тяжёлых вложений."
+        )
+        return False
+
+    except TelegramError as e:
+        await update.message.reply_text(
+            "Telegram вернул ошибку при отправке файла.\n\n"
+            f"Файл: {file_path.name}\n"
+            f"Размер: {human_file_size(file_size)}\n"
+            f"Ошибка: {e}"
+        )
+        return False
+
+    except Exception as e:
+        await update.message.reply_text(
+            "Не удалось отправить файл из-за непредвиденной ошибки.\n\n"
+            f"Файл: {file_path.name}\n"
+            f"Размер: {human_file_size(file_size)}\n"
+            f"Ошибка: {e}"
+        )
+        return False
+
+
 def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
     since = datetime.now(timezone.utc) - timedelta(days=days)
 
@@ -1101,6 +1183,8 @@ async def weekly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     chat_title = chat.title or chat.full_name or str(chat.id)
 
+    await update.message.reply_text("Готовлю ZIP-архив, это может занять немного времени...")
+
     zip_path, count, copied_files = create_zip_export(
         7,
         chat_id=chat.id,
@@ -1111,9 +1195,10 @@ async def weekly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("За последние 7 дней в этом чате пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=zip_path.open("rb"),
-        filename=zip_path.name,
+    await send_document_safely(
+        update,
+        context,
+        zip_path,
         caption=(
             f"Недельный пакет для анализа в Gemini.\n"
             f"Чат: {chat_title}\n"
@@ -1349,9 +1434,10 @@ async def export_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("За последние 7 дней в этом чате пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=export_path.open("rb"),
-        filename=export_path.name,
+    await send_document_safely(
+        update,
+        context,
+        export_path,
         caption=f"Экспорт текущего чата за последние 7 дней. Сообщений: {count}",
     )
 
@@ -1373,9 +1459,10 @@ async def export_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("За сегодня в этом чате пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=export_path.open("rb"),
-        filename=export_path.name,
+    await send_document_safely(
+        update,
+        context,
+        export_path,
         caption=f"Экспорт текущего чата за сегодня. Сообщений: {count}",
     )
 
@@ -1390,9 +1477,10 @@ async def export_all_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("За последние 7 дней пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=export_path.open("rb"),
-        filename=export_path.name,
+    await send_document_safely(
+        update,
+        context,
+        export_path,
         caption=f"Глобальный экспорт за последние 7 дней. Сообщений: {count}",
     )
 
@@ -1407,9 +1495,10 @@ async def export_all_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("За сегодня пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=export_path.open("rb"),
-        filename=export_path.name,
+    await send_document_safely(
+        update,
+        context,
+        export_path,
         caption=f"Глобальный экспорт за сегодня. Сообщений: {count}",
     )
 
@@ -1422,6 +1511,8 @@ async def export_zip_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat = update.effective_chat
+    await update.message.reply_text("Готовлю ZIP-архив, это может занять немного времени...")
+
     zip_path, count, copied_files = create_zip_export(
         7,
         chat_id=chat.id,
@@ -1432,9 +1523,10 @@ async def export_zip_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("За последние 7 дней в этом чате пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=zip_path.open("rb"),
-        filename=zip_path.name,
+    await send_document_safely(
+        update,
+        context,
+        zip_path,
         caption=(
             f"ZIP-архив текущего чата за последние 7 дней.\n"
             f"Сообщений: {count}\n"
@@ -1450,6 +1542,8 @@ async def export_zip_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat = update.effective_chat
+    await update.message.reply_text("Готовлю ZIP-архив, это может занять немного времени...")
+
     zip_path, count, copied_files = create_zip_export(
         1,
         chat_id=chat.id,
@@ -1460,9 +1554,10 @@ async def export_zip_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("За сегодня в этом чате пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=zip_path.open("rb"),
-        filename=zip_path.name,
+    await send_document_safely(
+        update,
+        context,
+        zip_path,
         caption=(
             f"ZIP-архив текущего чата за сегодня.\n"
             f"Сообщений: {count}\n"
@@ -1481,9 +1576,10 @@ async def export_zip_all_week(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("За последние 7 дней пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=zip_path.open("rb"),
-        filename=zip_path.name,
+    await send_document_safely(
+        update,
+        context,
+        zip_path,
         caption=(
             f"Глобальный ZIP-архив за последние 7 дней.\n"
             f"Сообщений: {count}\n"
@@ -1502,9 +1598,10 @@ async def export_zip_all_today(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("За сегодня пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=zip_path.open("rb"),
-        filename=zip_path.name,
+    await send_document_safely(
+        update,
+        context,
+        zip_path,
         caption=(
             f"Глобальный ZIP-архив за сегодня.\n"
             f"Сообщений: {count}\n"
@@ -1752,6 +1849,8 @@ async def friendly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     chat_title = chat.title or chat.full_name or str(chat.id)
 
+    await update.message.reply_text("Готовлю ZIP-архив, это может занять немного времени...")
+
     zip_path, count, copied_files = create_zip_export(
         7,
         chat_id=chat.id,
@@ -1762,9 +1861,10 @@ async def friendly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("За последние 7 дней в этом чате пока нет сохранённых сообщений.")
         return
 
-    await update.message.reply_document(
-        document=zip_path.open("rb"),
-        filename=zip_path.name,
+    await send_document_safely(
+        update,
+        context,
+        zip_path,
         caption=(
             f"Дружеский пакет для анализа в Gemini.\n"
             f"Чат: {chat_title}\n"
@@ -1845,6 +1945,8 @@ def main():
     print("Бот запущен. Нажми Ctrl+C для остановки.")
     print(f"Хранение данных: последние {RETENTION_DAYS} дней")
     print(f"Максимальный размер файла: {MAX_FILE_SIZE_MB} MB")
+    print(f"Максимальный размер отправляемого файла: {MAX_TELEGRAM_SEND_SIZE_MB} MB")
+    print(f"Telegram send timeout: {TELEGRAM_SEND_TIMEOUT_SECONDS} seconds")
     print("Команды:")
     print("/help — справка и меню в личном чате")
     print("/health — технический статус бота")
