@@ -2375,25 +2375,47 @@ async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update,
         context,
         export_path,
-        caption=f"1/3. Переписка текущего чата за последние 7 дней. Сообщений: {message_count}",
+        caption=f"1/4. Переписка текущего чата за последние 7 дней. Сообщений: {message_count}",
     )
 
     await send_document_safely(
         update,
         context,
         attachments_index_path,
-        caption=f"2/3. Индекс вложений за последние 7 дней. Вложений/файловых сообщений: {attachment_count}",
+        caption=f"2/4. Индекс вложений за последние 7 дней. Вложений/файловых сообщений: {attachment_count}",
     )
 
     await send_document_safely(
         update,
         context,
         prompt_path,
-        caption="3/3. Промпт для анализа рабочего чата в ChatGPT.",
+        caption="3/4. Промпт для анализа рабочего чата в ChatGPT.",
     )
 
     await update.message.reply_text(
-        "Рабочий пакет готов. Загрузи эти 3 файла в ChatGPT и попроси выполнить анализ по инструкции из work_analysis_prompt.txt."
+        "Готовлю полный ZIP-архив с перепиской и вложениями. Это может занять немного времени..."
+    )
+
+    zip_path, zip_message_count, copied_files = create_zip_export(
+        7,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+    )
+
+    await send_document_safely(
+        update,
+        context,
+        zip_path,
+        caption=(
+            f"4/4. Полный ZIP-архив текущего чата за последние 7 дней.\\n"
+            f"Сообщений: {zip_message_count}\\n"
+            f"Файлов: {copied_files}\\n\\n"
+            "Используй его как источник вложений, если нужно открыть конкретные файлы из attachments_index.md."
+        ),
+    )
+
+    await update.message.reply_text(
+        "Рабочий пакет готов. Загрузи в ChatGPT файлы 1–3 для структуры анализа, а ZIP используй как источник вложений при необходимости."
     )
 
 
