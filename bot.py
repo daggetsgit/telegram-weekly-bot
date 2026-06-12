@@ -1396,6 +1396,81 @@ def create_zip_export_interval(since_dt, until_dt, chat_id=None, chat_title_for_
     return zip_path, count, copied_files
 
 
+async def send_document_safely_to_chat(context: ContextTypes.DEFAULT_TYPE, target_chat_id: int, file_path: Path, caption: str = None) -> bool:
+    if not file_path.exists():
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"Не удалось отправить файл: файл не найден на сервере.\n\n{file_path.name}",
+        )
+        return False
+
+    file_size = file_path.stat().st_size
+
+    if file_size > MAX_TELEGRAM_SEND_SIZE_BYTES:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=(
+                "Файл сформирован, но он слишком большой для стабильной отправки через Telegram.\n\n"
+                f"Файл: {file_path.name}\n"
+                f"Размер: {human_file_size(file_size)}\n"
+                f"Лимит отправки: {MAX_TELEGRAM_SEND_SIZE_MB} MB"
+            ),
+        )
+        return False
+
+    try:
+        with file_path.open("rb") as f:
+            await context.bot.send_document(
+                chat_id=target_chat_id,
+                document=f,
+                filename=file_path.name,
+                caption=caption,
+                connect_timeout=TELEGRAM_SEND_TIMEOUT_SECONDS,
+                read_timeout=TELEGRAM_SEND_TIMEOUT_SECONDS,
+                write_timeout=TELEGRAM_SEND_TIMEOUT_SECONDS,
+                pool_timeout=TELEGRAM_SEND_TIMEOUT_SECONDS,
+            )
+
+        return True
+
+    except TimedOut:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=(
+                "Telegram не успел принять файл и оборвал отправку по таймауту.\n\n"
+                f"Файл: {file_path.name}\n"
+                f"Размер: {human_file_size(file_size)}"
+            ),
+        )
+        return False
+
+    except TelegramError as e:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=(
+                "Telegram вернул ошибку при отправке файла.\n\n"
+                f"Файл: {file_path.name}\n"
+                f"Размер: {human_file_size(file_size)}\n"
+                f"Ошибка: {e}"
+            ),
+        )
+        return False
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=(
+                "Не удалось отправить файл из-за непредвиденной ошибки.\n\n"
+                f"Файл: {file_path.name}\n"
+                f"Размер: {human_file_size(file_size)}\n"
+                f"Ошибка: {e}"
+            ),
+        )
+        return False
+
+
+
+
 def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
     since = datetime.now(timezone.utc) - timedelta(days=days)
 
@@ -1854,6 +1929,7 @@ def get_private_admin_keyboard():
         [
             ["/help", "/health"],
             ["/global_status"],
+            ["/report_chats"],
             ["/pending_chats", "/approved_chats"],
         ],
         resize_keyboard=True,
@@ -1926,6 +2002,9 @@ def get_private_help_text() -> str:
 
 /health
 Технический статус бота: хранение, база, файлы, чаты.
+
+/report_chats
+Показать подтверждённые чаты и собрать рабочий пакет кнопками.
 
 /global_status
 Общий статус по всем чатам.
@@ -2536,6 +2615,265 @@ async def friendly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+
+def get_approved_report_chats():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("PRAGMA table_info(chats)")
+    columns = [row[1] for row in cur.fetchall()]
+
+    if "chat_id" not in columns:
+        conn.close()
+        return []
+
+    title_col = "chat_title" if "chat_title" in columns else ("title" if "title" in columns else None)
+    type_col = "chat_type" if "chat_type" in columns else ("type" if "type" in columns else None)
+    status_col = "status" if "status" in columns else None
+
+    select_cols = ["chat_id"]
+    select_cols.append(title_col if title_col else "chat_id")
+    select_cols.append(type_col if type_col else "''")
+
+    query = f"SELECT {', '.join(select_cols)} FROM chats"
+    params = []
+
+    if status_col:
+        query += " WHERE status = ?"
+        params.append("approved")
+
+    query += " ORDER BY 2 ASC"
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    result = []
+
+    for chat_id, title, chat_type in rows:
+        if str(chat_type).lower() == "private":
+            continue
+
+        result.append(
+            {
+                "chat_id": int(chat_id),
+                "title": str(title or chat_id),
+                "type": str(chat_type or ""),
+            }
+        )
+
+    return result
+
+
+def get_approved_chat_title(chat_id: int):
+    chats = get_approved_report_chats()
+
+    for chat in chats:
+        if chat["chat_id"] == chat_id:
+            return chat["title"]
+
+    return None
+
+
+async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, target_chat_id: int, source_chat_id: int, source_chat_title: str, mode: str):
+    if mode == "shift":
+        since_dt, until_dt, period_label = get_current_work_shift_interval()
+
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"Готовлю рабочий пакет за смену для чата: {source_chat_title}\nПериод: {period_label}",
+        )
+
+        export_path, message_count = export_interval(
+            since_dt,
+            until_dt,
+            chat_id=source_chat_id,
+            chat_title_for_filename=source_chat_title,
+            period_label=period_label,
+        )
+
+        attachments_index_path, attachment_count = create_attachments_index(
+            1,
+            chat_id=source_chat_id,
+            chat_title_for_filename=source_chat_title,
+            since_dt=since_dt,
+            until_dt=until_dt,
+            period_label=period_label,
+        )
+
+        prompt_path = create_prompt_file(
+            get_chatgpt_work_prompt(source_chat_title, 1, period_label),
+            chat_title_for_filename=source_chat_title,
+        )
+
+        zip_path, zip_message_count, copied_files = create_zip_export_interval(
+            since_dt,
+            until_dt,
+            chat_id=source_chat_id,
+            chat_title_for_filename=source_chat_title,
+        )
+
+        package_label = "за смену"
+
+    else:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"Готовлю рабочий пакет за последние 7 дней для чата: {source_chat_title}",
+        )
+
+        export_path, message_count = export_last_days(
+            7,
+            chat_id=source_chat_id,
+            chat_title_for_filename=source_chat_title,
+        )
+
+        attachments_index_path, attachment_count = create_attachments_index(
+            7,
+            chat_id=source_chat_id,
+            chat_title_for_filename=source_chat_title,
+            period_label="last 7 days",
+        )
+
+        prompt_path = create_prompt_file(
+            get_chatgpt_work_prompt(source_chat_title, 7, "последние 7 дней"),
+            chat_title_for_filename=source_chat_title,
+        )
+
+        zip_path, zip_message_count, copied_files = create_zip_export(
+            7,
+            chat_id=source_chat_id,
+            chat_title_for_filename=source_chat_title,
+        )
+
+        package_label = "за последние 7 дней"
+
+    await send_document_safely_to_chat(
+        context,
+        target_chat_id,
+        export_path,
+        caption=f"1/4. Переписка чата «{source_chat_title}» {package_label}. Сообщений: {message_count}",
+    )
+
+    await send_document_safely_to_chat(
+        context,
+        target_chat_id,
+        attachments_index_path,
+        caption=f"2/4. Индекс вложений. Вложений/файловых сообщений: {attachment_count}",
+    )
+
+    await send_document_safely_to_chat(
+        context,
+        target_chat_id,
+        prompt_path,
+        caption="3/4. Промпт для анализа рабочего чата в ChatGPT.",
+    )
+
+    await send_document_safely_to_chat(
+        context,
+        target_chat_id,
+        zip_path,
+        caption=(
+            f"4/4. Полный ZIP-архив чата «{source_chat_title}» {package_label}.\n"
+            f"Сообщений: {zip_message_count}\n"
+            f"Файлов: {copied_files}\n\n"
+            "Используй ZIP как источник вложений, если нужно открыть конкретные файлы из attachments_index.md."
+        ),
+    )
+
+    await context.bot.send_message(
+        chat_id=target_chat_id,
+        text="Пакет готов. Загрузи в ChatGPT файлы 1–3 для структуры анализа, а ZIP используй как источник вложений при необходимости.",
+    )
+
+
+async def report_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(
+            "Управление рабочими пакетами лучше делать в личке с ботом, чтобы не шуметь в рабочем чате."
+        )
+        return
+
+    chats = get_approved_report_chats()
+
+    if not chats:
+        await update.message.reply_text("Нет подтверждённых групповых чатов для отчётов.")
+        return
+
+    keyboard = []
+
+    for chat in chats:
+        title = chat["title"]
+        chat_id = chat["chat_id"]
+
+        keyboard.append([InlineKeyboardButton(f"📌 {title}", callback_data=f"noop:{chat_id}")])
+        keyboard.append(
+            [
+                InlineKeyboardButton("Смена 09:00–сейчас", callback_data=f"workpkg:shift:{chat_id}"),
+                InlineKeyboardButton("7 дней", callback_data=f"workpkg:week:{chat_id}"),
+            ]
+        )
+
+    await update.message.reply_text(
+        "Выбери чат и тип рабочего пакета:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+
+    if not query:
+        return
+
+    user = update.effective_user
+
+    if not user or user.id not in ADMIN_USER_IDS:
+        await query.answer("Эта кнопка доступна только администратору бота.", show_alert=True)
+        return
+
+    data = query.data or ""
+
+    if data.startswith("noop:"):
+        await query.answer()
+        return
+
+    if not data.startswith("workpkg:"):
+        return
+
+    await query.answer()
+
+    try:
+        _, mode, raw_chat_id = data.split(":", 2)
+        source_chat_id = int(raw_chat_id)
+    except Exception:
+        await query.message.reply_text("Не удалось разобрать команду кнопки.")
+        return
+
+    source_chat_title = get_approved_chat_title(source_chat_id)
+
+    if not source_chat_title:
+        await query.message.reply_text(
+            "Этот чат не найден среди подтверждённых. Обнови список командой /report_chats."
+        )
+        return
+
+    try:
+        await send_work_package_for_source_chat(
+            context,
+            query.message.chat_id,
+            source_chat_id,
+            source_chat_title,
+            mode,
+        )
+    except Exception as e:
+        logging.exception("Could not create work package from inline button")
+        await query.message.reply_text(f"Не удалось собрать рабочий пакет.\n\nОшибка: {e}")
+
+
 async def cleanup_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
@@ -2831,11 +3169,13 @@ def main():
     app.add_handler(CommandHandler("weekly_package", weekly_package))
     app.add_handler(CommandHandler("work_package", work_package))
     app.add_handler(CommandHandler("work_shift_package", work_shift_package))
+    app.add_handler(CommandHandler("report_chats", report_chats))
     app.add_handler(CommandHandler("cleanup_now", cleanup_now))
     app.add_handler(CommandHandler("purge_chat", purge_chat))
     app.add_handler(CommandHandler("purge_all_data", purge_all_data))
     app.add_handler(CommandHandler("friendly_prompt", friendly_prompt))
     app.add_handler(CommandHandler("friendly_package", friendly_package))
+    app.add_handler(CallbackQueryHandler(work_package_callback, pattern=r"^(workpkg|noop):"))
     app.add_handler(CallbackQueryHandler(chat_approval_callback, pattern="^(approve_chat|reject_chat):"))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
@@ -2867,6 +3207,7 @@ def main():
     print("/weekly_package — ZIP за неделю + промпт для Gemini")
     print("/work_package — рабочий пакет для ChatGPT")
     print("/work_shift_package — рабочий пакет за смену 09:00–сейчас")
+    print("/report_chats — выбрать чат для пакета кнопками в личке")
     print("/cleanup_now — принудительная retention-очистка")
     print("/purge_chat <chat_id> — удалить архив конкретного чата")
     print("/purge_all_data CONFIRM — удалить весь архив")
