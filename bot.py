@@ -20,11 +20,12 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS", "")
-ADMIN_USER_IDS = {
-    int(x.strip())
-    for x in ADMIN_USER_IDS_RAW.split(",")
-    if x.strip().isdigit()
-}
+ADMIN_USER_ID_PARTS = [x.strip() for x in ADMIN_USER_IDS_RAW.split(",") if x.strip()]
+ADMIN_USER_IDS = (
+    {int(x) for x in ADMIN_USER_ID_PARTS}
+    if ADMIN_USER_ID_PARTS and all(x.isdigit() for x in ADMIN_USER_ID_PARTS)
+    else set()
+)
 
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
@@ -60,14 +61,17 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 
+if not ADMIN_USER_IDS:
+    logging.warning(
+        "ADMIN_USER_IDS is missing, empty, or invalid. "
+        "All administrator-only actions are disabled."
+    )
+
 
 def is_admin(update: Update) -> bool:
     user = update.effective_user
     if not user:
         return False
-
-    if not ADMIN_USER_IDS:
-        return True
 
     return user.id in ADMIN_USER_IDS
 
@@ -245,6 +249,21 @@ async def download_attachment(message, context: ContextTypes.DEFAULT_TYPE):
             "file_path": None,
             "file_skipped": 0,
             "file_skip_reason": None,
+        }
+
+    if file_size is not None and file_size > MAX_FILE_SIZE_BYTES:
+        return {
+            "file_id": file_id,
+            "file_unique_id": file_unique_id,
+            "file_name": original_file_name,
+            "file_mime_type": mime_type,
+            "file_size": file_size,
+            "file_path": None,
+            "file_skipped": 1,
+            "file_skip_reason": (
+                f"File size {file_size} bytes exceeds "
+                f"the configured limit of {MAX_FILE_SIZE_MB} MB"
+            ),
         }
 
     date_folder = message.date.astimezone().strftime("%Y-%m-%d")
@@ -630,8 +649,8 @@ def delete_file_from_message_path(file_path_value):
         return 0
 
     try:
-        candidate = DATA_DIR / file_path_value
-        if candidate.exists() and candidate.is_file():
+        candidate = resolve_stored_file_path(file_path_value)
+        if candidate and candidate.is_file():
             candidate.unlink()
             return 1
     except Exception as e:
@@ -2233,6 +2252,163 @@ async def weekly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await legacy_command_notice(update, "/weekly_package")
+
+
+def get_private_admin_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            ["/help", "/health"],
+            ["/global_status"],
+            ["/report_chats"],
+            ["/pending_chats", "/approved_chats"],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        selective=True,
+    )
+
+
+def get_private_help_text() -> str:
+    return """Личный кабинет бота
+
+Основной рабочий сценарий:
+
+/report_chats
+Показать подтверждённые рабочие чаты и собрать пакет кнопками, не отправляя команды в сами чаты.
+
+Через кнопки можно собрать:
+- пакет за текущую смену 09:00–сейчас;
+- пакет за последние 7 дней.
+
+Рабочий пакет включает:
+- 01_chat_export.md — переписка;
+- 02_attachments_index.md — индекс вложений;
+- 03_work_analysis_prompt.txt — промпт для ChatGPT;
+- 04_image_contact_sheet_*.jpg — обзор изображений и скриншотов, если они есть;
+- 05_full_archive.zip — полный архив с оригинальными вложениями.
+
+Ручные команды пакетов:
+
+/work_package
+Legacy/manual: собрать пакет текущего чата за последние 7 дней.
+Лучше использовать /report_chats в личке.
+
+/work_shift_package
+Legacy/manual: собрать пакет текущего чата за смену 09:00–сейчас.
+Лучше использовать /report_chats в личке.
+
+Обычно эти команды лучше не использовать в рабочих группах, чтобы не шуметь. Для рабочих чатов используй /report_chats в личке.
+
+Статус и диагностика:
+
+/version
+Показать текущую версию и сборку бота.
+
+/health
+Краткий технический статус бота.
+
+/storage_status
+Реальный размер базы, файлов, экспортов и data volume.
+
+/vacuum_db
+Сжать SQLite-базу после массовой очистки.
+
+/status
+Статус текущего чата.
+
+/global_status
+Общий статус по всем чатам.
+
+Управление чатами:
+
+/pending_chats
+Чаты, ожидающие подтверждения.
+
+/approved_chats
+Подтверждённые чаты.
+
+/approve_chat <chat_id>
+Подтвердить чат вручную.
+
+/reject_chat <chat_id>
+Отклонить чат вручную.
+
+/remove_chat <chat_id>
+Удалить чат из списка известных. При следующем сообщении бот снова запросит подтверждение.
+
+Очистка данных:
+
+/cleanup_now
+Принудительно запустить retention-очистку старше 14 дней.
+
+/purge_chat <chat_id>
+Полностью удалить архив конкретного чата и его файлы.
+
+/purge_all_data CONFIRM
+Полностью удалить все сохранённые сообщения, файлы и экспорты.
+Список известных чатов сохраняется.
+
+Старые экспортные команды:
+
+/export_today
+Markdown текущего чата за сегодня.
+
+/export_week
+Markdown текущего чата за последние 7 дней.
+
+/export_zip_today
+ZIP текущего чата за сегодня.
+
+/export_zip_week
+ZIP текущего чата за последние 7 дней.
+
+/export_all_today
+Markdown всех чатов за сегодня.
+
+/export_all_week
+Markdown всех чатов за последние 7 дней.
+
+/export_zip_all_today
+ZIP всех чатов за сегодня.
+
+/export_zip_all_week
+ZIP всех чатов за последние 7 дней.
+
+Старые prompt/package команды:
+
+/summary_prompt
+Промпт для анализа недельного архива.
+
+/weekly_package
+ZIP за неделю + старый промпт.
+
+Примечание:
+Для рабочих чатов основной способ работы теперь — /report_chats в личке с ботом.
+"""
+
+
+def get_group_help_text() -> str:
+    return """Бот работает в этом чате как тихий архиватор.
+
+Основное управление лучше делать в личке с ботом командой:
+
+/report_chats
+
+Так рабочий чат не будет засоряться служебными командами и файлами.
+
+Доступные команды в группе:
+
+/status
+Статус текущего чата.
+
+/version
+Версия бота.
+
+/help
+Краткая справка.
+
+Рабочие пакеты, экспорты, очистку и диагностику нужно запускать в личке с ботом.
+"""
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
