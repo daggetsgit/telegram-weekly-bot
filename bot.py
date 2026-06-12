@@ -3,6 +3,7 @@ import re
 import sqlite3
 import logging
 import shutil
+import zipfile
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
