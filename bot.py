@@ -4,6 +4,7 @@ import sqlite3
 import logging
 import shutil
 import zipfile
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -32,6 +33,10 @@ MAX_TELEGRAM_SEND_SIZE_BYTES = MAX_TELEGRAM_SEND_SIZE_MB * 1024 * 1024
 TELEGRAM_SEND_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_SEND_TIMEOUT_SECONDS", "180"))
 APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Bangkok"))
 WORK_SHIFT_START_HOUR = int(os.getenv("WORK_SHIFT_START_HOUR", "9"))
+CONTACT_SHEET_IMAGES_PER_PAGE = int(os.getenv("CONTACT_SHEET_IMAGES_PER_PAGE", "4"))
+CONTACT_SHEET_PAGE_WIDTH = int(os.getenv("CONTACT_SHEET_PAGE_WIDTH", "3000"))
+CONTACT_SHEET_THUMB_WIDTH = int(os.getenv("CONTACT_SHEET_THUMB_WIDTH", "1350"))
+CONTACT_SHEET_JPEG_QUALITY = int(os.getenv("CONTACT_SHEET_JPEG_QUALITY", "92"))
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -904,6 +909,258 @@ def get_stats(chat_id=None):
     return total_messages, week_messages, total_files
 
 
+
+
+
+def is_supported_contact_sheet_image(file_name, mime_type, file_path_value):
+    value = " ".join(str(x or "").lower() for x in [file_name, mime_type, file_path_value])
+
+    if "image/" in value:
+        return True
+
+    return value.endswith((".jpg", ".jpeg", ".png", ".webp"))
+
+
+def resolve_stored_file_path(file_path_value):
+    if not file_path_value:
+        return None
+
+    candidate = DATA_DIR / file_path_value
+
+    if candidate.exists():
+        return candidate
+
+    candidate = BASE_DIR / file_path_value
+
+    if candidate.exists():
+        return candidate
+
+    return None
+
+
+def load_contact_sheet_font(size: int):
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ]
+
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size)
+        except Exception:
+            pass
+
+    return ImageFont.load_default()
+
+
+def create_contact_sheets(days: int = 7, chat_id=None, chat_title_for_filename=None, since_dt=None, until_dt=None, period_label=None):
+    if since_dt is None:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    if until_dt is None:
+        until_dt = datetime.now(timezone.utc)
+
+    scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    base_where = """
+        date_utc >= ?
+        AND date_utc < ?
+        AND file_path IS NOT NULL
+        AND file_skipped = 0
+    """
+
+    select_sql = """
+        SELECT
+            chat_id,
+            chat_title,
+            message_id,
+            date_utc,
+            username,
+            full_name,
+            message_type,
+            file_name,
+            file_mime_type,
+            file_path,
+            caption
+        FROM messages
+    """
+
+    if chat_id is None:
+        query = f"""
+            {select_sql}
+            WHERE {base_where}
+            ORDER BY date_utc ASC
+        """
+        params = (since_dt.isoformat(), until_dt.isoformat())
+    else:
+        query = f"""
+            {select_sql}
+            WHERE chat_id = ?
+              AND {base_where}
+            ORDER BY date_utc ASC
+        """
+        params = (chat_id, since_dt.isoformat(), until_dt.isoformat())
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    image_items = []
+
+    for row in rows:
+        (
+            row_chat_id,
+            row_chat_title,
+            message_id,
+            date_utc,
+            username,
+            full_name,
+            message_type,
+            file_name,
+            file_mime_type,
+            file_path_value,
+            caption,
+        ) = row
+
+        if not is_supported_contact_sheet_image(file_name, file_mime_type, file_path_value):
+            continue
+
+        source_path = resolve_stored_file_path(file_path_value)
+
+        if not source_path or not source_path.exists():
+            continue
+
+        image_items.append(
+            {
+                "chat_title": row_chat_title or row_chat_id,
+                "message_id": message_id,
+                "date_utc": date_utc,
+                "username": username,
+                "full_name": full_name,
+                "message_type": message_type,
+                "file_name": file_name or source_path.name,
+                "mime_type": file_mime_type,
+                "file_path": source_path,
+                "caption": caption,
+            }
+        )
+
+    if not image_items:
+        return []
+
+    sheets = []
+    font_title = load_contact_sheet_font(34)
+    font_meta = load_contact_sheet_font(26)
+    font_small = load_contact_sheet_font(22)
+
+    page_width = CONTACT_SHEET_PAGE_WIDTH
+    margin = 70
+    gutter = 50
+    columns = 2
+    images_per_page = max(1, CONTACT_SHEET_IMAGES_PER_PAGE)
+    tile_width = min(CONTACT_SHEET_THUMB_WIDTH, int((page_width - margin * 2 - gutter) / columns))
+    image_max_height = 1500
+    caption_height = 210
+    tile_height = image_max_height + caption_height
+    header_height = 170
+    rows_per_page = max(1, (images_per_page + columns - 1) // columns)
+    page_height = header_height + margin + rows_per_page * tile_height + (rows_per_page - 1) * gutter + margin
+
+    total_pages = (len(image_items) + images_per_page - 1) // images_per_page
+
+    for page_index in range(total_pages):
+        chunk = image_items[page_index * images_per_page:(page_index + 1) * images_per_page]
+
+        sheet = Image.new("RGB", (page_width, page_height), "white")
+        draw = ImageDraw.Draw(sheet)
+
+        title = f"Image contact sheet — {chat_title_for_filename or 'all chats'}"
+        subtitle = f"Period: {period_label or f'last {days} days'} | Page {page_index + 1}/{total_pages}"
+
+        draw.text((margin, 45), title, fill="black", font=font_title)
+        draw.text((margin, 95), subtitle, fill="black", font=font_meta)
+
+        for item_index, item in enumerate(chunk):
+            global_index = page_index * images_per_page + item_index + 1
+
+            col = item_index % columns
+            row_num = item_index // columns
+
+            x = margin + col * (tile_width + gutter)
+            y = header_height + margin + row_num * (tile_height + gutter)
+
+            try:
+                with Image.open(item["file_path"]) as img:
+                    img = ImageOps.exif_transpose(img)
+                    img = img.convert("RGB")
+
+                    original_width, original_height = img.size
+                    scale = min(tile_width / original_width, image_max_height / original_height, 1.0)
+                    new_width = max(1, int(original_width * scale))
+                    new_height = max(1, int(original_height * scale))
+
+                    img = img.resize((new_width, new_height), Image.LANCZOS)
+
+                    image_x = x + int((tile_width - new_width) / 2)
+                    image_y = y
+
+                    sheet.paste(img, (image_x, image_y))
+
+                    draw.rectangle(
+                        [x, y, x + tile_width, y + image_max_height],
+                        outline=(180, 180, 180),
+                        width=2,
+                    )
+
+            except Exception as e:
+                draw.rectangle(
+                    [x, y, x + tile_width, y + image_max_height],
+                    outline=(180, 180, 180),
+                    width=2,
+                )
+                draw.text((x + 20, y + 20), f"Could not render image: {e}", fill="black", font=font_small)
+
+            try:
+                parsed_dt = datetime.fromisoformat(item["date_utc"])
+                local_dt = parsed_dt.astimezone(APP_TIMEZONE)
+                date_text = local_dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                date_text = item["date_utc"]
+
+            sender = item["full_name"] or item["username"] or "Unknown"
+            file_name = item["file_name"]
+            caption = item["caption"] or ""
+
+            caption_y = y + image_max_height + 18
+
+            lines = [
+                f"Attachment image {global_index}",
+                f"{date_text} | {sender}",
+                f"{file_name}",
+            ]
+
+            if caption:
+                trimmed_caption = caption.replace("\n", " ")
+                if len(trimmed_caption) > 90:
+                    trimmed_caption = trimmed_caption[:87] + "..."
+                lines.append(f"Caption: {trimmed_caption}")
+
+            for line_index, line in enumerate(lines):
+                draw.text(
+                    (x, caption_y + line_index * 34),
+                    line,
+                    fill="black",
+                    font=font_small if line_index else font_meta,
+                )
+
+        sheet_path = EXPORT_DIR / f"04_image_contact_sheet_{scope}_{page_index + 1}.jpg"
+        sheet.save(sheet_path, "JPEG", quality=CONTACT_SHEET_JPEG_QUALITY, optimize=True)
+        sheets.append(sheet_path)
+
+    return sheets
 
 
 def create_attachments_index(days: int = 7, chat_id=None, chat_title_for_filename=None, since_dt=None, until_dt=None, period_label=None):
@@ -1859,7 +2116,9 @@ Best Service Assistance — компания медицинского ассис
 - Сначала прочитай chat_export.md.
 - Затем изучи attachments_index.md.
 - Если загружены отдельные документы, изображения, скриншоты или файлы — изучи их содержимое.
+- Если есть contact sheets, используй их как визуальный обзор изображений и скриншотов.
 - Если есть изображения или скриншоты, анализируй видимый текст, интерфейсы, таблицы, документы, ошибки, суммы, даты, имена, статусы и другие важные детали.
+- Если текст на contact sheet слишком мелкий или нечитаемый, используй attachments_index.md и ZIP, чтобы найти или запросить оригинальный файл.
 - Если есть PDF, Word, Excel, презентации или текстовые документы — изучи их содержимое, если оно доступно.
 - Если есть аудио или голосовые без расшифровки, не игнорируй их и не выдумывай содержание.
 
@@ -2788,6 +3047,15 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             chat_title_for_filename=source_chat_title,
         )
 
+        contact_sheet_paths = create_contact_sheets(
+            1,
+            chat_id=source_chat_id,
+            chat_title_for_filename=source_chat_title,
+            since_dt=since_dt,
+            until_dt=until_dt,
+            period_label=period_label,
+        )
+
         zip_path, zip_message_count, copied_files = create_zip_export_interval(
             since_dt,
             until_dt,
@@ -2821,6 +3089,13 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             chat_title_for_filename=source_chat_title,
         )
 
+        contact_sheet_paths = create_contact_sheets(
+            7,
+            chat_id=source_chat_id,
+            chat_title_for_filename=source_chat_title,
+            period_label="last 7 days",
+        )
+
         zip_path, zip_message_count, copied_files = create_zip_export(
             7,
             chat_id=source_chat_id,
@@ -2849,6 +3124,20 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
         prompt_path,
         caption="3/4. Промпт для анализа рабочего чата в ChatGPT.",
     )
+
+    if contact_sheet_paths:
+        for index, sheet_path in enumerate(contact_sheet_paths, start=1):
+            await send_document_safely_to_chat(
+                context,
+                target_chat_id,
+                sheet_path,
+                caption=f"Contact sheet {index}/{len(contact_sheet_paths)}. Крупный обзор изображений и скриншотов.",
+            )
+    else:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="Изображений за период не найдено, contact sheet не создан.",
+        )
 
     await send_document_safely_to_chat(
         context,
@@ -3083,6 +3372,13 @@ async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_title_for_filename=chat_title,
     )
 
+    contact_sheet_paths = create_contact_sheets(
+        7,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+        period_label="last 7 days",
+    )
+
     await send_document_safely(
         update,
         context,
@@ -3103,6 +3399,17 @@ async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt_path,
         caption="3/4. Промпт для анализа рабочего чата в ChatGPT.",
     )
+
+    if contact_sheet_paths:
+        for index, sheet_path in enumerate(contact_sheet_paths, start=1):
+            await send_document_safely(
+                update,
+                context,
+                sheet_path,
+                caption=f"Contact sheet {index}/{len(contact_sheet_paths)}. Крупный обзор изображений и скриншотов.",
+            )
+    else:
+        await update.message.reply_text("Изображений за период не найдено, contact sheet не создан.")
 
     await update.message.reply_text(
         "Готовлю полный ZIP-архив с перепиской и вложениями. Это может занять немного времени..."
@@ -3169,6 +3476,15 @@ async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat_title_for_filename=chat_title,
     )
 
+    contact_sheet_paths = create_contact_sheets(
+        1,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+        since_dt=since_dt,
+        until_dt=until_dt,
+        period_label=period_label,
+    )
+
     await send_document_safely(
         update,
         context,
@@ -3189,6 +3505,17 @@ async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
         prompt_path,
         caption="3/4. Промпт для анализа рабочей смены в ChatGPT.",
     )
+
+    if contact_sheet_paths:
+        for index, sheet_path in enumerate(contact_sheet_paths, start=1):
+            await send_document_safely(
+                update,
+                context,
+                sheet_path,
+                caption=f"Contact sheet {index}/{len(contact_sheet_paths)}. Крупный обзор изображений и скриншотов за смену.",
+            )
+    else:
+        await update.message.reply_text("Изображений за смену не найдено, contact sheet не создан.")
 
     await update.message.reply_text(
         "Готовлю полный ZIP-архив смены с перепиской и вложениями. Это может занять немного времени..."
@@ -3305,6 +3632,7 @@ def main():
     print(f"Максимальный размер файла: {MAX_FILE_SIZE_MB} MB")
     print(f"Максимальный размер отправляемого файла: {MAX_TELEGRAM_SEND_SIZE_MB} MB")
     print(f"Telegram send timeout: {TELEGRAM_SEND_TIMEOUT_SECONDS} seconds")
+    print(f"Contact sheets: {CONTACT_SHEET_IMAGES_PER_PAGE} images/page, width {CONTACT_SHEET_PAGE_WIDTH}px, quality {CONTACT_SHEET_JPEG_QUALITY}")
     print("Команды:")
     print("/help — справка и меню в личном чате")
     print("/health — технический статус бота")
