@@ -1330,7 +1330,7 @@ def create_zip_export(days: int = 7, chat_id=None, chat_title_for_filename=None)
     )
 
     scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
-    zip_path = EXPORT_DIR / f"telegram_export_{scope}_last_{days}_days.zip"
+    zip_path = EXPORT_DIR / f"05_full_archive_{scope}_last_{days}_days.zip"
 
     if zip_path.exists():
         zip_path.unlink()
@@ -1670,7 +1670,7 @@ def create_zip_export_interval(since_dt, until_dt, chat_id=None, chat_title_for_
     )
 
     scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
-    zip_path = EXPORT_DIR / f"04_full_archive_{scope}_work_shift.zip"
+    zip_path = EXPORT_DIR / f"05_full_archive_{scope}_work_shift.zip"
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -2273,46 +2273,58 @@ def get_private_admin_keyboard():
 
 
 def get_private_help_text() -> str:
-    return """Weekly Work Summary Bot
+    return """Личный кабинет бота
 
-Что делает бот:
-- сохраняет сообщения и вложения из подтверждённых рабочих Telegram-чатов;
-- формирует Markdown и ZIP-архивы;
-- помогает подготовить архив для анализа в Gemini;
-- хранит данные только за последние 14 дней;
-- не сохраняет файлы больше 50 MB;
-- новые чаты начинает сохранять только после подтверждения администратором.
+Основной рабочий сценарий:
 
-Основной рабочий сценарий в группе:
+/report_chats
+Показать подтверждённые рабочие чаты и собрать пакет кнопками, не отправляя команды в сами чаты.
+
+Через кнопки можно собрать:
+- пакет за текущую смену 09:00–сейчас;
+- пакет за последние 7 дней.
+
+Рабочий пакет включает:
+- 01_chat_export.md — переписка;
+- 02_attachments_index.md — индекс вложений;
+- 03_work_analysis_prompt.txt — промпт для ChatGPT;
+- 04_image_contact_sheet_*.jpg — обзор изображений и скриншотов, если они есть;
+- 05_full_archive.zip — полный архив с оригинальными вложениями.
+
+Ручные команды пакетов:
 
 /work_package
-Рабочий пакет для ChatGPT: переписка, индекс вложений и промпт.
+Собрать рабочий пакет текущего чата за последние 7 дней.
 
 /work_shift_package
-Рабочий пакет для ChatGPT за текущую смену 09:00–сейчас.
+Собрать рабочий пакет текущего чата за смену 09:00–сейчас.
 
-/weekly_package
-Отправляет ZIP-архив за последние 7 дней и готовый промпт для Gemini.
+Обычно эти команды лучше не использовать в рабочих группах, чтобы не шуметь. Для рабочих чатов используй /report_chats в личке.
 
-/export_zip_week
-Отправляет ZIP-архив текущего чата за последние 7 дней.
+Статус и диагностика:
 
-/export_zip_today
-Отправляет ZIP-архив текущего чата за сегодня.
+/health
+Краткий технический статус бота.
 
-/summary_prompt
-Отправляет только промпт для Gemini без архива.
+/storage_status
+Реальный размер базы, файлов, экспортов и data volume.
+
+/vacuum_db
+Сжать SQLite-базу после массовой очистки.
 
 /status
-Показывает статус текущего чата: сколько сообщений и файлов сохранено.
+Статус текущего чата.
+
+/global_status
+Общий статус по всем чатам.
 
 Управление чатами:
 
 /pending_chats
-Показывает чаты, ожидающие подтверждения.
+Чаты, ожидающие подтверждения.
 
 /approved_chats
-Показывает подтверждённые чаты.
+Подтверждённые чаты.
 
 /approve_chat <chat_id>
 Подтвердить чат вручную.
@@ -2323,78 +2335,75 @@ def get_private_help_text() -> str:
 /remove_chat <chat_id>
 Удалить чат из списка известных. При следующем сообщении бот снова запросит подтверждение.
 
+Очистка данных:
+
 /cleanup_now
-Принудительно запустить retention-очистку.
+Принудительно запустить retention-очистку старше 14 дней.
 
 /purge_chat <chat_id>
-Полностью удалить архив конкретного чата.
+Полностью удалить архив конкретного чата и его файлы.
 
 /purge_all_data CONFIRM
 Полностью удалить все сохранённые сообщения, файлы и экспорты.
+Список известных чатов сохраняется.
 
-Глобальные команды:
+Старые экспортные команды:
 
-/health
-Технический статус бота: хранение, база, файлы, чаты.
+/export_today
+Markdown текущего чата за сегодня.
 
-/storage_status
-Показать реальный размер базы, файлов, экспортов и data volume.
+/export_week
+Markdown текущего чата за последние 7 дней.
 
-/vacuum_db
-Сжать SQLite-базу после очистки сообщений.
+/export_zip_today
+ZIP текущего чата за сегодня.
 
-/report_chats
-Показать подтверждённые чаты и собрать рабочий пакет кнопками.
+/export_zip_week
+ZIP текущего чата за последние 7 дней.
 
-/global_status
-Общий статус по всем чатам.
+/export_all_today
+Markdown всех чатов за сегодня.
 
 /export_all_week
-Markdown-экспорт всех чатов за 7 дней.
+Markdown всех чатов за последние 7 дней.
+
+/export_zip_all_today
+ZIP всех чатов за сегодня.
 
 /export_zip_all_week
-ZIP-экспорт всех чатов за 7 дней.
+ZIP всех чатов за последние 7 дней.
 
-Доступ:
-Команды экспорта и управления доступны только администратору бота.
-Обычные участники не могут выгружать архивы.
+Старые prompt/package команды:
+
+/summary_prompt
+Промпт для анализа недельного архива.
+
+/weekly_package
+ZIP за неделю + старый промпт.
+
+Примечание:
+Для рабочих чатов основной способ работы теперь — /report_chats в личке с ботом.
 """
 
 
 def get_group_help_text() -> str:
-    return """Weekly Work Summary Bot
+    return """Бот работает в этом чате как тихий архиватор.
 
-Этот бот сохраняет сообщения и вложения из подтверждённого рабочего чата и помогает подготовить недельный архив для анализа в Gemini.
+Основное управление лучше делать в личке с ботом командой:
 
-Основные команды для текущего чата:
+/report_chats
 
-/work_package
-Рабочий пакет для ChatGPT: переписка, индекс вложений и промпт.
+Так рабочий чат не будет засоряться служебными командами и файлами.
 
-/work_shift_package
-Рабочий пакет для ChatGPT за текущую смену 09:00–сейчас.
-
-/weekly_package
-ZIP-архив за последние 7 дней + готовый промпт для Gemini.
-
-/export_zip_week
-ZIP-архив текущего чата за последние 7 дней.
-
-/export_zip_today
-ZIP-архив текущего чата за сегодня.
-
-/summary_prompt
-Только промпт для Gemini без архива.
+Доступные команды в группе:
 
 /status
-Статус текущего чата: сколько сообщений и файлов сохранено.
+Статус текущего чата.
 
-Важно:
-- команды доступны только администратору бота;
-- обычные участники не могут выгружать архивы;
-- данные хранятся только за последние 14 дней;
-- файлы больше 50 MB не скачиваются;
-- новые чаты сохраняются только после подтверждения администратором.
+/help
+Краткая справка.
+
+Рабочие пакеты, экспорты, очистку и диагностику лучше запускать в личке с ботом.
 """
 
 
@@ -3153,7 +3162,7 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
 
     await context.bot.send_message(
         chat_id=target_chat_id,
-        text="Пакет готов. Загрузи в ChatGPT chat_export.md, attachments_index.md, prompt и contact sheets. ZIP используй как источник оригинальных вложений при необходимости.",
+        text="Пакет готов. Для анализа загрузи в ChatGPT: chat_export.md, attachments_index.md, work_analysis_prompt.txt и contact sheets. ZIP используй как источник оригинальных вложений при необходимости.",
     )
 
 
@@ -3434,7 +3443,7 @@ async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(
-        "Рабочий пакет готов. Загрузи в ChatGPT chat_export.md, attachments_index.md, prompt и contact sheets. ZIP используй как источник оригинальных вложений при необходимости."
+        "Рабочий пакет готов. Для анализа загрузи в ChatGPT: chat_export.md, attachments_index.md, work_analysis_prompt.txt и contact sheets. ZIP используй как источник оригинальных вложений при необходимости."
     )
 
 
@@ -3551,7 +3560,7 @@ async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if sent:
         await update.message.reply_text(
-            "Рабочий пакет за смену готов. Загрузи в ChatGPT chat_export.md, attachments_index.md, prompt и contact sheets. ZIP используй как источник оригинальных вложений при необходимости."
+            "Рабочий пакет за смену готов. Для анализа загрузи в ChatGPT: chat_export.md, attachments_index.md, work_analysis_prompt.txt и contact sheets. ZIP используй как источник оригинальных вложений при необходимости."
         )
 
 
