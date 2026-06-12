@@ -2207,215 +2207,32 @@ Best Service Assistance — компания медицинского ассис
 """
 
 
+
+async def legacy_command_notice(update: Update, command_name: str):
+    await update.message.reply_text(
+        f"{command_name} — legacy-команда старого сценария.\n\n"
+        "Основной рабочий сценарий теперь такой:\n"
+        "1. Открой личный чат с ботом.\n"
+        "2. Используй /report_chats.\n"
+        "3. Выбери нужный чат кнопками.\n"
+        "4. Собери пакет за смену 09:00–сейчас или за последние 7 дней.\n\n"
+        "Новый пакет включает chat_export.md, attachments_index.md, work_analysis_prompt.txt, "
+        "contact sheets и full archive ZIP."
+    )
+
+
 async def summary_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
-    if not await ensure_chat_approved(update, context):
-        return
 
-    chat = update.effective_chat
-    chat_title = chat.title or chat.full_name or str(chat.id)
-
-    await update.message.reply_text(
-        get_gemini_summary_prompt(chat_title, 7)
-    )
+    await legacy_command_notice(update, "/summary_prompt")
 
 
 async def weekly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
-    if not await ensure_chat_approved(update, context):
-        return
 
-    chat = update.effective_chat
-    chat_title = chat.title or chat.full_name or str(chat.id)
-
-    await update.message.reply_text("Готовлю ZIP-архив, это может занять немного времени...")
-
-    zip_path, count, copied_files = create_zip_export(
-        7,
-        chat_id=chat.id,
-        chat_title_for_filename=chat_title,
-    )
-
-    if count == 0:
-        await update.message.reply_text("За последние 7 дней в этом чате пока нет сохранённых сообщений.")
-        return
-
-    await send_document_safely(
-        update,
-        context,
-        zip_path,
-        caption=(
-            f"Недельный пакет для анализа в Gemini.\n"
-            f"Чат: {chat_title}\n"
-            f"Сообщений: {count}\n"
-            f"Файлов: {copied_files}\n\n"
-            f"Следующим сообщением отправлю промпт для анализа."
-        ),
-    )
-
-    await update.message.reply_text(
-        get_gemini_summary_prompt(chat_title, 7)
-    )
-
-
-
-def get_private_admin_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            ["/help", "/health"],
-            ["/global_status"],
-            ["/report_chats"],
-            ["/pending_chats", "/approved_chats"],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-        selective=True,
-    )
-
-
-def get_private_help_text() -> str:
-    return """Личный кабинет бота
-
-Основной рабочий сценарий:
-
-/report_chats
-Показать подтверждённые рабочие чаты и собрать пакет кнопками, не отправляя команды в сами чаты.
-
-Через кнопки можно собрать:
-- пакет за текущую смену 09:00–сейчас;
-- пакет за последние 7 дней.
-
-Рабочий пакет включает:
-- 01_chat_export.md — переписка;
-- 02_attachments_index.md — индекс вложений;
-- 03_work_analysis_prompt.txt — промпт для ChatGPT;
-- 04_image_contact_sheet_*.jpg — обзор изображений и скриншотов, если они есть;
-- 05_full_archive.zip — полный архив с оригинальными вложениями.
-
-Ручные команды пакетов:
-
-/work_package
-Legacy/manual: собрать пакет текущего чата за последние 7 дней.
-Лучше использовать /report_chats в личке.
-
-/work_shift_package
-Legacy/manual: собрать пакет текущего чата за смену 09:00–сейчас.
-Лучше использовать /report_chats в личке.
-
-Обычно эти команды лучше не использовать в рабочих группах, чтобы не шуметь. Для рабочих чатов используй /report_chats в личке.
-
-Статус и диагностика:
-
-/version
-Показать текущую версию и сборку бота.
-
-/health
-Краткий технический статус бота.
-
-/storage_status
-Реальный размер базы, файлов, экспортов и data volume.
-
-/vacuum_db
-Сжать SQLite-базу после массовой очистки.
-
-/status
-Статус текущего чата.
-
-/global_status
-Общий статус по всем чатам.
-
-Управление чатами:
-
-/pending_chats
-Чаты, ожидающие подтверждения.
-
-/approved_chats
-Подтверждённые чаты.
-
-/approve_chat <chat_id>
-Подтвердить чат вручную.
-
-/reject_chat <chat_id>
-Отклонить чат вручную.
-
-/remove_chat <chat_id>
-Удалить чат из списка известных. При следующем сообщении бот снова запросит подтверждение.
-
-Очистка данных:
-
-/cleanup_now
-Принудительно запустить retention-очистку старше 14 дней.
-
-/purge_chat <chat_id>
-Полностью удалить архив конкретного чата и его файлы.
-
-/purge_all_data CONFIRM
-Полностью удалить все сохранённые сообщения, файлы и экспорты.
-Список известных чатов сохраняется.
-
-Старые экспортные команды:
-
-/export_today
-Markdown текущего чата за сегодня.
-
-/export_week
-Markdown текущего чата за последние 7 дней.
-
-/export_zip_today
-ZIP текущего чата за сегодня.
-
-/export_zip_week
-ZIP текущего чата за последние 7 дней.
-
-/export_all_today
-Markdown всех чатов за сегодня.
-
-/export_all_week
-Markdown всех чатов за последние 7 дней.
-
-/export_zip_all_today
-ZIP всех чатов за сегодня.
-
-/export_zip_all_week
-ZIP всех чатов за последние 7 дней.
-
-Старые prompt/package команды:
-
-/summary_prompt
-Промпт для анализа недельного архива.
-
-/weekly_package
-ZIP за неделю + старый промпт.
-
-Примечание:
-Для рабочих чатов основной способ работы теперь — /report_chats в личке с ботом.
-"""
-
-
-def get_group_help_text() -> str:
-    return """Бот работает в этом чате как тихий архиватор.
-
-Основное управление лучше делать в личке с ботом командой:
-
-/report_chats
-
-Так рабочий чат не будет засоряться служебными командами и файлами.
-
-Доступные команды в группе:
-
-/status
-Статус текущего чата.
-
-/version
-Версия бота.
-
-/help
-Краткая справка.
-
-Рабочие пакеты, экспорты, очистку и диагностику нужно запускать в личке с ботом.
-"""
+    await legacy_command_notice(update, "/weekly_package")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3730,7 +3547,7 @@ def main():
     print("/reject_chat <chat_id> — отклонить чат")
     print("/remove_chat <chat_id> — отключить чат")
     print("/summary_prompt — промпт для Gemini")
-    print("/weekly_package — ZIP за неделю + промпт для Gemini")
+    print("/weekly_package — legacy, используйте /report_chats")
     print("/work_package — рабочий пакет для ChatGPT")
     print("/work_shift_package — рабочий пакет за смену 09:00–сейчас")
     print("/report_chats — выбрать чат для пакета кнопками в личке")
