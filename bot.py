@@ -725,6 +725,81 @@ def force_retention_cleanup():
     return deleted_messages, deleted_files
 
 
+
+def get_dir_size_bytes(root: Path) -> int:
+    if not root.exists():
+        return 0
+
+    total = 0
+
+    for item in root.rglob("*"):
+        if item.is_file():
+            try:
+                total += item.stat().st_size
+            except OSError:
+                pass
+
+    return total
+
+
+def get_dir_file_count(root: Path) -> int:
+    if not root.exists():
+        return 0
+
+    return sum(1 for item in root.rglob("*") if item.is_file())
+
+
+def get_storage_status_data():
+    db_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM messages")
+    message_count = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL")
+    db_file_count = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM chats")
+    chats_count = cur.fetchone()[0]
+
+    conn.close()
+
+    files_size = get_dir_size_bytes(FILES_DIR)
+    exports_size = get_dir_size_bytes(EXPORT_DIR)
+    data_size = get_dir_size_bytes(DATA_DIR)
+
+    files_count = get_dir_file_count(FILES_DIR)
+    exports_count = get_dir_file_count(EXPORT_DIR)
+    data_count = get_dir_file_count(DATA_DIR)
+
+    return {
+        "db_size": db_size,
+        "message_count": message_count,
+        "db_file_count": db_file_count,
+        "chats_count": chats_count,
+        "files_size": files_size,
+        "exports_size": exports_size,
+        "data_size": data_size,
+        "files_count": files_count,
+        "exports_count": exports_count,
+        "data_count": data_count,
+    }
+
+
+def vacuum_database():
+    before_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("VACUUM")
+    conn.close()
+
+    after_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+
+    return before_size, after_size
+
+
 def get_health_data():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -2003,6 +2078,12 @@ def get_private_help_text() -> str:
 /health
 Технический статус бота: хранение, база, файлы, чаты.
 
+/storage_status
+Показать реальный размер базы, файлов, экспортов и data volume.
+
+/vacuum_db
+Сжать SQLite-базу после очистки сообщений.
+
 /report_chats
 Показать подтверждённые чаты и собрать рабочий пакет кнопками.
 
@@ -2787,6 +2868,43 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
     )
 
 
+
+async def storage_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    data = get_storage_status_data()
+
+    await update.message.reply_text(
+        "Storage status\n\n"
+        "Database:\n"
+        f"messages.db: {human_file_size(data['db_size'])}\n"
+        f"Messages rows: {data['message_count']}\n"
+        f"DB file records: {data['db_file_count']}\n"
+        f"Known chats: {data['chats_count']}\n\n"
+        "Directories:\n"
+        f"data/files: {human_file_size(data['files_size'])} / {data['files_count']} files\n"
+        f"data/exports: {human_file_size(data['exports_size'])} / {data['exports_count']} files\n"
+        f"data total: {human_file_size(data['data_size'])} / {data['data_count']} files\n\n"
+        "If messages rows are low but messages.db is large, run /vacuum_db."
+    )
+
+
+async def vacuum_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    before_size, after_size = vacuum_database()
+    saved = before_size - after_size
+
+    await update.message.reply_text(
+        "SQLite VACUUM выполнен.\n\n"
+        f"Было: {human_file_size(before_size)}\n"
+        f"Стало: {human_file_size(after_size)}\n"
+        f"Освобождено: {human_file_size(saved)}"
+    )
+
+
 async def report_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
@@ -3150,6 +3268,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("storage_status", storage_status))
+    app.add_handler(CommandHandler("vacuum_db", vacuum_db))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("global_status", global_status))
     app.add_handler(CommandHandler("export_week", export_week))
@@ -3188,6 +3308,8 @@ def main():
     print("Команды:")
     print("/help — справка и меню в личном чате")
     print("/health — технический статус бота")
+    print("/storage_status — размер базы и файлов")
+    print("/vacuum_db — сжать SQLite после очистки")
     print("/status — статус текущего чата")
     print("/global_status — статус всех чатов")
     print("/export_today — экспорт текущего чата за сегодня")
