@@ -605,6 +605,14 @@ def cleanup_old_data(retention_days: int = RETENTION_DAYS):
 
 
 
+
+def count_files_in_dir(root: Path) -> int:
+    if not root.exists():
+        return 0
+
+    return sum(1 for item in root.rglob("*") if item.is_file())
+
+
 def delete_file_from_message_path(file_path_value):
     if not file_path_value:
         return 0
@@ -661,13 +669,6 @@ def purge_all_archive_data():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    cur.execute("SELECT file_path FROM messages WHERE file_path IS NOT NULL")
-    file_paths = [row[0] for row in cur.fetchall()]
-
-    deleted_files = 0
-    for fp in file_paths:
-        deleted_files += delete_file_from_message_path(fp)
-
     cur.execute("SELECT COUNT(*) FROM messages")
     deleted_messages = cur.fetchone()[0]
 
@@ -675,15 +676,20 @@ def purge_all_archive_data():
     conn.commit()
     conn.close()
 
+    files_before = count_files_in_dir(FILES_DIR)
+    exports_before = count_files_in_dir(EXPORT_DIR)
+
     if FILES_DIR.exists():
         shutil.rmtree(FILES_DIR)
-        FILES_DIR.mkdir(parents=True, exist_ok=True)
+    FILES_DIR.mkdir(parents=True, exist_ok=True)
 
     if EXPORT_DIR.exists():
         shutil.rmtree(EXPORT_DIR)
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    return deleted_messages, deleted_files
+    deleted_physical_files = files_before + exports_before
+
+    return deleted_messages, deleted_physical_files
 
 
 def force_retention_cleanup():
@@ -2328,8 +2334,8 @@ async def purge_all_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Полная очистка архива выполнена.\n\n"
-        f"Удалено сообщений: {deleted_messages}\n"
-        f"Удалено файлов: {deleted_files}\n"
+        f"Удалено сообщений из базы: {deleted_messages}\n"
+        f"Удалено физических файлов и экспортов: {deleted_files}\n"
         "Список известных чатов сохранён."
     )
 
