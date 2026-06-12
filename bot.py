@@ -33,6 +33,9 @@ MAX_TELEGRAM_SEND_SIZE_BYTES = MAX_TELEGRAM_SEND_SIZE_MB * 1024 * 1024
 TELEGRAM_SEND_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_SEND_TIMEOUT_SECONDS", "180"))
 APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Bangkok"))
 WORK_SHIFT_START_HOUR = int(os.getenv("WORK_SHIFT_START_HOUR", "9"))
+BOT_VERSION = os.getenv("BOT_VERSION", "0.5.0")
+BOT_BUILD_NAME = os.getenv("BOT_BUILD_NAME", "work-packages-private-control-contact-sheets")
+BOT_BUILD_DATE = os.getenv("BOT_BUILD_DATE", "2026-06-12")
 CONTACT_SHEET_IMAGES_PER_PAGE = int(os.getenv("CONTACT_SHEET_IMAGES_PER_PAGE", "4"))
 CONTACT_SHEET_PAGE_WIDTH = int(os.getenv("CONTACT_SHEET_PAGE_WIDTH", "3000"))
 CONTACT_SHEET_THUMB_WIDTH = int(os.getenv("CONTACT_SHEET_THUMB_WIDTH", "1350"))
@@ -2305,6 +2308,9 @@ Legacy/manual: собрать пакет текущего чата за смен
 
 Статус и диагностика:
 
+/version
+Показать текущую версию и сборку бота.
+
 /health
 Краткий технический статус бота.
 
@@ -2402,6 +2408,9 @@ def get_group_help_text() -> str:
 /status
 Статус текущего чата.
 
+/version
+Версия бота.
+
 /help
 Краткая справка.
 
@@ -2441,6 +2450,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
     )
 
+
+
+
+async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    await update.message.reply_text(
+        "Bot version\n\n"
+        f"Version: {BOT_VERSION}\n"
+        f"Build: {BOT_BUILD_NAME}\n"
+        f"Build date: {BOT_BUILD_DATE}\n\n"
+        "Enabled features:\n"
+        "- approved chats\n"
+        "- private /report_chats with buttons\n"
+        "- work packages for 7 days\n"
+        "- work shift packages 09:00–now\n"
+        "- attachments index\n"
+        "- OCR-friendly image contact sheets\n"
+        "- full archive ZIP\n"
+        "- cleanup / purge commands\n"
+        "- storage diagnostics\n"
+        "- quiet group mode"
+    )
 
 
 async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3635,6 +3668,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("version", version))
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("storage_status", storage_status))
     app.add_handler(CommandHandler("vacuum_db", vacuum_db))
@@ -3676,6 +3710,7 @@ def main():
     print(f"Contact sheets: {CONTACT_SHEET_IMAGES_PER_PAGE} images/page, width {CONTACT_SHEET_PAGE_WIDTH}px, quality {CONTACT_SHEET_JPEG_QUALITY}")
     print("Команды:")
     print("/help — справка и меню в личном чате")
+    print("/version — версия и сборка бота")
     print("/health — технический статус бота")
     print("/storage_status — размер базы и файлов")
     print("/vacuum_db — сжать SQLite после очистки")
