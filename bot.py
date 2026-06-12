@@ -2294,10 +2294,12 @@ def get_private_help_text() -> str:
 Ручные команды пакетов:
 
 /work_package
-Собрать рабочий пакет текущего чата за последние 7 дней.
+Legacy/manual: собрать пакет текущего чата за последние 7 дней.
+Лучше использовать /report_chats в личке.
 
 /work_shift_package
-Собрать рабочий пакет текущего чата за смену 09:00–сейчас.
+Legacy/manual: собрать пакет текущего чата за смену 09:00–сейчас.
+Лучше использовать /report_chats в личке.
 
 Обычно эти команды лучше не использовать в рабочих группах, чтобы не шуметь. Для рабочих чатов используй /report_chats в личке.
 
@@ -2403,7 +2405,7 @@ def get_group_help_text() -> str:
 /help
 Краткая справка.
 
-Рабочие пакеты, экспорты, очистку и диагностику лучше запускать в личке с ботом.
+Рабочие пакеты, экспорты, очистку и диагностику нужно запускать в личке с ботом.
 """
 
 
@@ -3168,6 +3170,8 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
 
 
 async def storage_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await group_private_control_notice(update):
+        return
     if not await admin_only(update):
         return
 
@@ -3189,6 +3193,8 @@ async def storage_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def vacuum_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await group_private_control_notice(update):
+        return
     if not await admin_only(update):
         return
 
@@ -3201,6 +3207,22 @@ async def vacuum_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Стало: {human_file_size(after_size)}\n"
         f"Освобождено: {human_file_size(saved)}"
     )
+
+
+
+async def group_private_control_notice(update: Update) -> bool:
+    """
+    Returns True if command should stop because it was called in a group.
+    Work package / admin workflow should be controlled from private chat.
+    """
+    if update.effective_chat and update.effective_chat.type != "private":
+        await update.message.reply_text(
+            "Чтобы не засорять рабочий чат, управление ботом вынесено в личку.\n\n"
+            "Открой личный чат с ботом и используй /report_chats."
+        )
+        return True
+
+    return False
 
 
 async def report_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3291,6 +3313,8 @@ async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def cleanup_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await group_private_control_notice(update):
+        return
     if not await admin_only(update):
         return
 
@@ -3305,6 +3329,8 @@ async def cleanup_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def purge_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await group_private_control_notice(update):
+        return
     if not await admin_only(update):
         return
 
@@ -3328,6 +3354,8 @@ async def purge_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def purge_all_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await group_private_control_notice(update):
+        return
     if not await admin_only(update):
         return
 
@@ -3351,6 +3379,8 @@ async def purge_all_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await group_private_control_notice(update):
+        return
     if not await admin_only(update):
         return
     if not await ensure_chat_approved(update, context):
@@ -3449,6 +3479,8 @@ async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await group_private_control_notice(update):
+        return
     if not await admin_only(update):
         return
     if not await ensure_chat_approved(update, context):
