@@ -604,6 +604,117 @@ def cleanup_old_data(retention_days: int = RETENTION_DAYS):
 
 
 
+
+def delete_file_from_message_path(file_path_value):
+    if not file_path_value:
+        return 0
+
+    try:
+        candidate = DATA_DIR / file_path_value
+        if candidate.exists() and candidate.is_file():
+            candidate.unlink()
+            return 1
+    except Exception as e:
+        logging.warning("Could not delete file %s: %s", file_path_value, e)
+
+    return 0
+
+
+def cleanup_empty_dirs(root: Path):
+    if not root.exists():
+        return
+
+    for path_item in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path_item.is_dir():
+            try:
+                path_item.rmdir()
+            except OSError:
+                pass
+
+
+def purge_chat_archive_data(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("SELECT file_path FROM messages WHERE chat_id = ?", (chat_id,))
+    file_paths = [row[0] for row in cur.fetchall()]
+
+    deleted_files = 0
+    for fp in file_paths:
+        deleted_files += delete_file_from_message_path(fp)
+
+    cur.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ?", (chat_id,))
+    deleted_messages = cur.fetchone()[0]
+
+    cur.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+    cur.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
+
+    conn.commit()
+    conn.close()
+
+    cleanup_empty_dirs(FILES_DIR)
+
+    return deleted_messages, deleted_files
+
+
+def purge_all_archive_data():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("SELECT file_path FROM messages WHERE file_path IS NOT NULL")
+    file_paths = [row[0] for row in cur.fetchall()]
+
+    deleted_files = 0
+    for fp in file_paths:
+        deleted_files += delete_file_from_message_path(fp)
+
+    cur.execute("SELECT COUNT(*) FROM messages")
+    deleted_messages = cur.fetchone()[0]
+
+    cur.execute("DELETE FROM messages")
+    conn.commit()
+    conn.close()
+
+    if FILES_DIR.exists():
+        shutil.rmtree(FILES_DIR)
+        FILES_DIR.mkdir(parents=True, exist_ok=True)
+
+    if EXPORT_DIR.exists():
+        shutil.rmtree(EXPORT_DIR)
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+    return deleted_messages, deleted_files
+
+
+def force_retention_cleanup():
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT file_path FROM messages WHERE date_utc < ? AND file_path IS NOT NULL",
+        (cutoff.isoformat(),),
+    )
+    file_paths = [row[0] for row in cur.fetchall()]
+
+    deleted_files = 0
+    for fp in file_paths:
+        deleted_files += delete_file_from_message_path(fp)
+
+    cur.execute("SELECT COUNT(*) FROM messages WHERE date_utc < ?", (cutoff.isoformat(),))
+    deleted_messages = cur.fetchone()[0]
+
+    cur.execute("DELETE FROM messages WHERE date_utc < ?", (cutoff.isoformat(),))
+
+    conn.commit()
+    conn.close()
+
+    cleanup_empty_dirs(FILES_DIR)
+
+    return deleted_messages, deleted_files
+
+
 def get_health_data():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -707,6 +818,166 @@ def get_stats(chat_id=None):
 
     return total_messages, week_messages, total_files
 
+
+
+
+def create_attachments_index(days: int = 7, chat_id=None, chat_title_for_filename=None, since_dt=None, until_dt=None, period_label=None):
+    if since_dt is None:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    if until_dt is None:
+        until_dt = datetime.now(timezone.utc)
+
+    scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
+    export_path = EXPORT_DIR / f"02_attachments_index_{scope}.md"
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    base_where = """
+        date_utc >= ?
+        AND date_utc < ?
+        AND (
+            file_id IS NOT NULL
+            OR file_path IS NOT NULL
+            OR file_skipped = 1
+            OR message_type IN ('photo', 'document', 'video', 'voice', 'audio', 'animation')
+        )
+    """
+
+    if chat_id is None:
+        query = f"""
+            SELECT
+                id, chat_id, chat_title, message_id, date_utc, username, full_name,
+                message_type, text, caption, file_id, file_name, file_mime_type,
+                file_size, file_path, file_skipped, file_skip_reason
+            FROM messages
+            WHERE {base_where}
+            ORDER BY date_utc ASC
+        """
+        params = (since_dt.isoformat(), until_dt.isoformat())
+    else:
+        query = f"""
+            SELECT
+                id, chat_id, chat_title, message_id, date_utc, username, full_name,
+                message_type, text, caption, file_id, file_name, file_mime_type,
+                file_size, file_path, file_skipped, file_skip_reason
+            FROM messages
+            WHERE chat_id = ?
+              AND {base_where}
+            ORDER BY date_utc ASC
+        """
+        params = (chat_id, since_dt.isoformat(), until_dt.isoformat())
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+
+    with export_path.open("w", encoding="utf-8") as f:
+        f.write("# Attachments index\n\n")
+        f.write(f"Period: {period_label or f'last {days} days'}\n\n")
+
+        if chat_id is not None:
+            f.write(f"Chat: {chat_title_for_filename or chat_id}\n\n")
+        else:
+            f.write("Scope: all chats\n\n")
+
+        f.write(
+            "This file lists attachments and file-like messages from the Telegram export. "
+            "Use it together with 01_chat_export.md.\n\n"
+        )
+
+        if not rows:
+            f.write("No attachments found for this period.\n")
+
+        for number, row in enumerate(rows, start=1):
+            (
+                db_id, row_chat_id, row_chat_title, message_id, date_utc, username, full_name,
+                message_type, text_value, caption, file_id, file_name, file_mime_type,
+                file_size, file_path, file_skipped, file_skip_reason
+            ) = row
+
+            display_name = full_name or username or "Unknown"
+
+            f.write(f"## Attachment {number}\n\n")
+            f.write(f"- Date UTC: `{date_utc}`\n")
+            f.write(f"- Chat: `{row_chat_title or row_chat_id}`\n")
+            f.write(f"- Message ID: `{message_id}`\n")
+            f.write(f"- Sender: `{display_name}`\n")
+            f.write(f"- Message type: `{message_type}`\n")
+
+            if file_name:
+                f.write(f"- File name: `{file_name}`\n")
+            if file_mime_type:
+                f.write(f"- MIME type: `{file_mime_type}`\n")
+            if file_size:
+                f.write(f"- File size: `{file_size}` bytes\n")
+            if file_path:
+                f.write(f"- Local path: `{file_path}`\n")
+            if file_skipped:
+                f.write(f"- File skipped: `yes`\n")
+                f.write(f"- Skip reason: `{file_skip_reason}`\n")
+
+            if message_type in ("voice", "audio"):
+                f.write("- Transcript: `not available`\n")
+                f.write("- Transcript note: ask user to paste Telegram Premium transcript if needed.\n")
+
+            if caption:
+                f.write(f"- Caption: {caption}\n")
+            if text_value and text_value != caption:
+                f.write(f"- Message text: {text_value}\n")
+
+            cur.execute(
+                """
+                SELECT date_utc, full_name, username, message_type, text, caption, file_name
+                FROM messages
+                WHERE chat_id = ?
+                  AND date_utc < ?
+                ORDER BY date_utc DESC
+                LIMIT 2
+                """,
+                (row_chat_id, date_utc),
+            )
+            previous_rows = list(reversed(cur.fetchall()))
+
+            cur.execute(
+                """
+                SELECT date_utc, full_name, username, message_type, text, caption, file_name
+                FROM messages
+                WHERE chat_id = ?
+                  AND date_utc > ?
+                ORDER BY date_utc ASC
+                LIMIT 2
+                """,
+                (row_chat_id, date_utc),
+            )
+            next_rows = cur.fetchall()
+
+            if previous_rows:
+                f.write("\n### Previous context\n\n")
+                for ctx in previous_rows:
+                    ctx_date, ctx_full_name, ctx_username, ctx_type, ctx_text, ctx_caption, ctx_file_name = ctx
+                    ctx_sender = ctx_full_name or ctx_username or "Unknown"
+                    ctx_body = ctx_text or ctx_caption or ctx_file_name or ""
+                    f.write(f"- `{ctx_date}` {ctx_sender} [{ctx_type}]: {ctx_body}\n")
+
+            if next_rows:
+                f.write("\n### Next context\n\n")
+                for ctx in next_rows:
+                    ctx_date, ctx_full_name, ctx_username, ctx_type, ctx_text, ctx_caption, ctx_file_name = ctx
+                    ctx_sender = ctx_full_name or ctx_username or "Unknown"
+                    ctx_body = ctx_text or ctx_caption or ctx_file_name or ""
+                    f.write(f"- `{ctx_date}` {ctx_sender} [{ctx_type}]: {ctx_body}\n")
+
+            f.write("\n---\n\n")
+
+    conn.close()
+    return export_path, len(rows)
+
+
+def create_prompt_file(prompt_text: str, chat_title_for_filename: str, prefix: str = "03_work_analysis_prompt"):
+    scope = safe_filename(chat_title_for_filename or "chat")
+    prompt_path = EXPORT_DIR / f"{prefix}_{scope}.txt"
+    prompt_path.write_text(prompt_text, encoding="utf-8")
+    return prompt_path
 
 
 def create_zip_export(days: int = 7, chat_id=None, chat_title_for_filename=None):
@@ -1160,6 +1431,114 @@ def get_friendly_summary_prompt(chat_title: str, days: int = 7) -> str:
 """
 
 
+
+def get_chatgpt_work_prompt(chat_title: str, days: int = 7, period_label: str = None) -> str:
+    period_text = period_label or f"последние {days} дней"
+
+    return f"""Ты — аналитик рабочей коммуникации и помощник по управлению задачами.
+
+Я загрузил рабочий пакет с экспортом Telegram-чата "{chat_title}" за период: {period_text}.
+
+В пакете могут быть:
+1. chat_export.md — полная переписка за период.
+2. attachments_index.md — индекс вложений: файлы, фото, документы, аудио, подписи и контекст вокруг них.
+3. Отдельные вложения или полный ZIP-архив, если они были загружены дополнительно.
+
+Контекст компании:
+Best Service Assistance — компания медицинского ассистанса. В рабочих чатах могут встречаться чувствительные медицинские, юридические и страховые темы: смерть пациента, тело/труп, травмы, ДТП, госпитализация, операции, медицинская эвакуация, репатриация, полиция, насилие, страховые споры, финансовые претензии, счета клиник и другие сложные случаи.
+
+Такие упоминания являются частью профессионального контекста medical assistance. Не исключай их автоматически и не прекращай анализ. Обрабатывай такие темы нейтрально, деловым языком, без сенсационности, без лишних графичных деталей и без домыслов. Фиксируй только то, что нужно для понимания задач, решений, рисков, сроков, ответственных и дальнейших действий.
+
+Порядок анализа:
+- Сначала прочитай chat_export.md.
+- Затем изучи attachments_index.md.
+- Если загружены отдельные документы, изображения, скриншоты или файлы — изучи их содержимое.
+- Если есть изображения или скриншоты, анализируй видимый текст, интерфейсы, таблицы, документы, ошибки, суммы, даты, имена, статусы и другие важные детали.
+- Если есть PDF, Word, Excel, презентации или текстовые документы — изучи их содержимое, если оно доступно.
+- Если есть аудио или голосовые без расшифровки, не игнорируй их и не выдумывай содержание.
+
+Работа с голосовыми:
+Если в attachments_index.md есть voice/audio без transcript, сначала попроси пользователя прислать расшифровки вручную. Сформируй короткий список:
+1. дата/время — автор — имя файла — краткий контекст
+2. ...
+
+Пока расшифровки не предоставлены:
+- не выдумывай содержание голосовых;
+- используй только факт наличия голосового и контекст сообщений до/после;
+- пометь такие голосовые как “требует ручной расшифровки”.
+
+Если пользователь прислал расшифровки, сопоставь их с voice/audio по порядку, времени, автору или имени файла и учитывай в общем анализе.
+
+Нужный формат ответа:
+
+1. Краткое резюме периода
+В 5–10 предложениях опиши, что в целом обсуждали, какие были основные события, решения и рабочий контекст.
+
+2. Основные темы обсуждения
+Сгруппируй переписку по темам. Для каждой темы укажи:
+- краткое описание;
+- ключевые сообщения или выводы;
+- связанные файлы, если они есть;
+- текущий статус темы: закрыта / в работе / требует внимания / непонятно.
+
+3. Задачи и поручения
+Составь таблицу:
+- задача;
+- ответственный, если его можно определить;
+- срок, если он был указан или явно подразумевается;
+- источник/контекст из переписки;
+- связанные файлы;
+- статус: новая / в работе / ожидает ответа / выполнена / риск просрочки.
+
+Если ответственный или срок не указаны явно, не выдумывай. Напиши «не указан» или «требуется подтверждение».
+
+4. Открытые вопросы
+Выдели вопросы, которые обсуждались, но не были закрыты. Для каждого укажи:
+- вопрос;
+- кто должен ответить, если понятно;
+- что нужно сделать дальше;
+- почему это важно.
+
+5. Решения и договорённости
+Отдельно перечисли все решения, договорённости и подтверждения, которые были явно зафиксированы в переписке.
+
+6. Риски и проблемные места
+Отметь возможные риски:
+- задержки;
+- отсутствие ответственного;
+- отсутствие срока;
+- финансовые вопросы;
+- конфликтные или спорные моменты;
+- срочные задачи;
+- темы, которые могут быть забыты;
+- документы или файлы, которые требуют проверки.
+
+7. Файлы и вложения
+Составь список важных вложений. Для каждого укажи:
+- название файла;
+- тип файла;
+- к какой теме относится;
+- что в нём содержится, если файл доступен для чтения;
+- какой контекст вокруг файла был в переписке;
+- какие действия с ним нужны, если это понятно.
+
+Если файл нельзя прочитать, открыть, прослушать или понять — явно укажи это.
+
+8. Следующие шаги
+Сформируй короткий список приоритетных действий на ближайшие дни.
+
+9. Executive summary
+В конце дай краткую версию на 5–7 пунктов, которую можно быстро отправить руководителю или команде.
+
+Правила:
+- Не выдумывай факты, имена, сроки, решения или содержание файлов.
+- Если информация неочевидна, помечай её как предположение.
+- Не пересказывай всю переписку подряд, а группируй информацию по смыслу.
+- Пиши деловым, нейтральным стилем.
+- Если есть персональные или чувствительные данные, используй их только тогда, когда это необходимо для понимания задач и контекста.
+"""
+
+
 async def summary_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
@@ -1240,6 +1619,9 @@ def get_private_help_text() -> str:
 
 Основной рабочий сценарий в группе:
 
+/work_package
+Рабочий пакет для ChatGPT: переписка, индекс вложений и промпт.
+
 /weekly_package
 Отправляет ZIP-архив за последние 7 дней и готовый промпт для Gemini.
 
@@ -1272,6 +1654,15 @@ def get_private_help_text() -> str:
 /remove_chat <chat_id>
 Удалить чат из списка известных. При следующем сообщении бот снова запросит подтверждение.
 
+/cleanup_now
+Принудительно запустить retention-очистку.
+
+/purge_chat <chat_id>
+Полностью удалить архив конкретного чата.
+
+/purge_all_data CONFIRM
+Полностью удалить все сохранённые сообщения, файлы и экспорты.
+
 Глобальные команды:
 
 /health
@@ -1298,6 +1689,9 @@ def get_group_help_text() -> str:
 Этот бот сохраняет сообщения и вложения из подтверждённого рабочего чата и помогает подготовить недельный архив для анализа в Gemini.
 
 Основные команды для текущего чата:
+
+/work_package
+Рабочий пакет для ChatGPT: переписка, индекс вложений и промпт.
 
 /weekly_package
 ZIP-архив за последние 7 дней + готовый промпт для Gemini.
@@ -1879,6 +2273,124 @@ async def friendly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+async def cleanup_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    deleted_messages, deleted_files = force_retention_cleanup()
+
+    await update.message.reply_text(
+        "Принудительная retention-очистка выполнена.\n\n"
+        f"Удалено сообщений: {deleted_messages}\n"
+        f"Удалено файлов: {deleted_files}\n"
+        f"Retention: {RETENTION_DAYS} дней"
+    )
+
+
+async def purge_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if not context.args or not context.args[0].lstrip("-").isdigit():
+        await update.message.reply_text(
+            "Использование:\n/purge_chat <chat_id>\n\n"
+            "Команда полностью удалит сообщения, файлы и запись чата из списка известных."
+        )
+        return
+
+    target_chat_id = int(context.args[0])
+    deleted_messages, deleted_files = purge_chat_archive_data(target_chat_id)
+
+    await update.message.reply_text(
+        "Данные чата удалены.\n\n"
+        f"Chat ID: {target_chat_id}\n"
+        f"Удалено сообщений: {deleted_messages}\n"
+        f"Удалено файлов: {deleted_files}\n\n"
+        "Если бот снова увидит этот чат, он заново запросит подтверждение."
+    )
+
+
+async def purge_all_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if not context.args or context.args[0] != "CONFIRM":
+        await update.message.reply_text(
+            "Опасная команда полной очистки архива.\n\n"
+            "Использование:\n/purge_all_data CONFIRM\n\n"
+            "Будут удалены все сохранённые сообщения, файлы и экспорты.\n"
+            "Список approved/pending/rejected чатов сохранится."
+        )
+        return
+
+    deleted_messages, deleted_files = purge_all_archive_data()
+
+    await update.message.reply_text(
+        "Полная очистка архива выполнена.\n\n"
+        f"Удалено сообщений: {deleted_messages}\n"
+        f"Удалено файлов: {deleted_files}\n"
+        "Список известных чатов сохранён."
+    )
+
+
+async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+    if not await ensure_chat_approved(update, context):
+        return
+
+    chat = update.effective_chat
+    chat_title = chat.title or chat.full_name or str(chat.id)
+
+    await update.message.reply_text(
+        "Готовлю рабочий пакет для анализа в ChatGPT: переписка, индекс вложений и промпт..."
+    )
+
+    export_path, message_count = export_last_days(
+        7,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+    )
+
+    attachments_index_path, attachment_count = create_attachments_index(
+        7,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+        period_label="last 7 days",
+    )
+
+    prompt_path = create_prompt_file(
+        get_chatgpt_work_prompt(chat_title, 7, "последние 7 дней"),
+        chat_title_for_filename=chat_title,
+    )
+
+    await send_document_safely(
+        update,
+        context,
+        export_path,
+        caption=f"1/3. Переписка текущего чата за последние 7 дней. Сообщений: {message_count}",
+    )
+
+    await send_document_safely(
+        update,
+        context,
+        attachments_index_path,
+        caption=f"2/3. Индекс вложений за последние 7 дней. Вложений/файловых сообщений: {attachment_count}",
+    )
+
+    await send_document_safely(
+        update,
+        context,
+        prompt_path,
+        caption="3/3. Промпт для анализа рабочего чата в ChatGPT.",
+    )
+
+    await update.message.reply_text(
+        "Рабочий пакет готов. Загрузи эти 3 файла в ChatGPT и попроси выполнить анализ по инструкции из work_analysis_prompt.txt."
+    )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
@@ -1936,6 +2448,10 @@ def main():
     app.add_handler(CommandHandler("remove_chat", remove_chat))
     app.add_handler(CommandHandler("summary_prompt", summary_prompt))
     app.add_handler(CommandHandler("weekly_package", weekly_package))
+    app.add_handler(CommandHandler("work_package", work_package))
+    app.add_handler(CommandHandler("cleanup_now", cleanup_now))
+    app.add_handler(CommandHandler("purge_chat", purge_chat))
+    app.add_handler(CommandHandler("purge_all_data", purge_all_data))
     app.add_handler(CommandHandler("friendly_prompt", friendly_prompt))
     app.add_handler(CommandHandler("friendly_package", friendly_package))
     app.add_handler(CallbackQueryHandler(chat_approval_callback, pattern="^(approve_chat|reject_chat):"))
@@ -1967,6 +2483,10 @@ def main():
     print("/remove_chat <chat_id> — отключить чат")
     print("/summary_prompt — промпт для Gemini")
     print("/weekly_package — ZIP за неделю + промпт для Gemini")
+    print("/work_package — рабочий пакет для ChatGPT")
+    print("/cleanup_now — принудительная retention-очистка")
+    print("/purge_chat <chat_id> — удалить архив конкретного чата")
+    print("/purge_all_data CONFIRM — удалить весь архив")
 
     app.run_polling(drop_pending_updates=True)
 
