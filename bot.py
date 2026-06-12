@@ -2407,9 +2407,9 @@ async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context,
         zip_path,
         caption=(
-            f"4/4. Полный ZIP-архив текущего чата за последние 7 дней.\\n"
-            f"Сообщений: {zip_message_count}\\n"
-            f"Файлов: {copied_files}\\n\\n"
+            f"4/4. Полный ZIP-архив текущего чата за последние 7 дней.\n"
+            f"Сообщений: {zip_message_count}\n"
+            f"Файлов: {copied_files}\n\n"
             "Используй его как источник вложений, если нужно открыть конкретные файлы из attachments_index.md."
         ),
     )
