@@ -1379,7 +1379,15 @@ def create_zip_export_interval(since_dt, until_dt, chat_id=None, chat_title_for_
         zf.write(export_path, arcname=export_path.name)
 
         for (relative_file_path,) in file_rows:
+            # file_path in DB may be stored either as:
+            # - "files/2026-..."
+            # - "data/files/2026-..."
+            # so try both DATA_DIR-relative and BASE_DIR-relative paths.
             source_path = DATA_DIR / relative_file_path
+
+            if not source_path.exists():
+                source_path = BASE_DIR / relative_file_path
+
             if source_path.exists() and source_path.is_file():
                 zf.write(source_path, arcname=f"files/{source_path.name}")
                 copied_files += 1
@@ -2729,14 +2737,22 @@ async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "Готовлю полный ZIP-архив смены с перепиской и вложениями. Это может занять немного времени..."
     )
 
-    zip_path, zip_message_count, copied_files = create_zip_export_interval(
-        since_dt,
-        until_dt,
-        chat_id=chat.id,
-        chat_title_for_filename=chat_title,
-    )
+    try:
+        zip_path, zip_message_count, copied_files = create_zip_export_interval(
+            since_dt,
+            until_dt,
+            chat_id=chat.id,
+            chat_title_for_filename=chat_title,
+        )
+    except Exception as e:
+        logging.exception("Could not create work shift ZIP archive")
+        await update.message.reply_text(
+            "Не удалось создать ZIP-архив смены. Первые 3 файла уже готовы, но вложения в ZIP не собраны.\n\n"
+            f"Ошибка: {e}"
+        )
+        return
 
-    await send_document_safely(
+    sent = await send_document_safely(
         update,
         context,
         zip_path,
@@ -2749,9 +2765,10 @@ async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ),
     )
 
-    await update.message.reply_text(
-        "Рабочий пакет за смену готов. Загрузи в ChatGPT файлы 1–3 для структуры анализа, а ZIP используй как источник вложений при необходимости."
-    )
+    if sent:
+        await update.message.reply_text(
+            "Рабочий пакет за смену готов. Загрузи в ChatGPT файлы 1–3 для структуры анализа, а ZIP используй как источник вложений при необходимости."
+        )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
