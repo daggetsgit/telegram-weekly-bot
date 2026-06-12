@@ -4,6 +4,7 @@ import sqlite3
 import logging
 import shutil
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,6 +29,8 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 MAX_TELEGRAM_SEND_SIZE_MB = int(os.getenv("MAX_TELEGRAM_SEND_SIZE_MB", "49"))
 MAX_TELEGRAM_SEND_SIZE_BYTES = MAX_TELEGRAM_SEND_SIZE_MB * 1024 * 1024
 TELEGRAM_SEND_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_SEND_TIMEOUT_SECONDS", "180"))
+APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Bangkok"))
+WORK_SHIFT_START_HOUR = int(os.getenv("WORK_SHIFT_START_HOUR", "9"))
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -1146,6 +1149,244 @@ async def send_document_safely(update: Update, context: ContextTypes.DEFAULT_TYP
         return False
 
 
+
+def get_current_work_shift_interval():
+    now_local = datetime.now(APP_TIMEZONE)
+    shift_start_local = now_local.replace(
+        hour=WORK_SHIFT_START_HOUR,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+    if now_local < shift_start_local:
+        shift_start_local = shift_start_local - timedelta(days=1)
+
+    shift_end_local = now_local
+
+    since_utc = shift_start_local.astimezone(timezone.utc)
+    until_utc = shift_end_local.astimezone(timezone.utc)
+
+    period_label = (
+        f"{shift_start_local.strftime('%Y-%m-%d %H:%M')} — "
+        f"{shift_end_local.strftime('%Y-%m-%d %H:%M')} "
+        f"{APP_TIMEZONE.key if hasattr(APP_TIMEZONE, 'key') else APP_TIMEZONE}"
+    )
+
+    return since_utc, until_utc, period_label
+
+
+def export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=None, period_label=None):
+    scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
+    export_path = EXPORT_DIR / f"01_chat_export_{scope}_work_shift.md"
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    if chat_id is None:
+        cur.execute(
+            """
+            SELECT
+                chat_id,
+                chat_title,
+                message_id,
+                date_utc,
+                username,
+                full_name,
+                message_type,
+                text,
+                caption,
+                file_name,
+                file_mime_type,
+                file_size,
+                file_path,
+                file_skipped,
+                file_skip_reason
+            FROM messages
+            WHERE date_utc >= ?
+              AND date_utc < ?
+            ORDER BY date_utc ASC
+            """,
+            (since_dt.isoformat(), until_dt.isoformat()),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT
+                chat_id,
+                chat_title,
+                message_id,
+                date_utc,
+                username,
+                full_name,
+                message_type,
+                text,
+                caption,
+                file_name,
+                file_mime_type,
+                file_size,
+                file_path,
+                file_skipped,
+                file_skip_reason
+            FROM messages
+            WHERE chat_id = ?
+              AND date_utc >= ?
+              AND date_utc < ?
+            ORDER BY date_utc ASC
+            """,
+            (chat_id, since_dt.isoformat(), until_dt.isoformat()),
+        )
+
+    rows = cur.fetchall()
+    conn.close()
+
+    with export_path.open("w", encoding="utf-8") as f:
+        f.write("# Telegram work shift export\n\n")
+
+        if chat_id is not None:
+            f.write(f"Scope: {chat_title_for_filename or chat_id}\n\n")
+        else:
+            f.write("Scope: all chats\n\n")
+
+        f.write(f"Period: {period_label or f'{since_dt.isoformat()} — {until_dt.isoformat()}'}\n\n")
+        f.write(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n")
+        f.write(f"Messages: {len(rows)}\n\n")
+        f.write("---\n\n")
+
+        current_date = None
+
+        for row in rows:
+            (
+                row_chat_id,
+                row_chat_title,
+                message_id,
+                date_utc,
+                username,
+                full_name,
+                message_type,
+                text_value,
+                caption,
+                file_name,
+                file_mime_type,
+                file_size,
+                file_path,
+                file_skipped,
+                file_skip_reason,
+            ) = row
+
+            try:
+                parsed_dt = datetime.fromisoformat(date_utc)
+                local_dt = parsed_dt.astimezone(APP_TIMEZONE)
+                message_date = local_dt.strftime("%Y-%m-%d")
+                message_time = local_dt.strftime("%H:%M")
+            except Exception:
+                message_date = date_utc[:10]
+                message_time = date_utc[11:16]
+
+            if message_date != current_date:
+                current_date = message_date
+                f.write(f"\n## {current_date}\n\n")
+
+            sender = full_name or username or "Unknown"
+
+            f.write(f"### {message_time} — {sender}")
+            if username:
+                f.write(f" (@{username})")
+            f.write("\n\n")
+
+            f.write(f"- Chat: `{row_chat_title or row_chat_id}`\n")
+            f.write(f"- Message ID: `{message_id}`\n")
+            f.write(f"- Type: `{message_type}`\n")
+
+            if file_name:
+                f.write(f"- File name: `{file_name}`\n")
+            if file_mime_type:
+                f.write(f"- File MIME type: `{file_mime_type}`\n")
+            if file_size:
+                f.write(f"- File size: `{file_size}` bytes\n")
+            if file_path:
+                f.write(f"- File path: `{file_path}`\n")
+            if file_skipped:
+                f.write("- File skipped: `yes`\n")
+                f.write(f"- Skip reason: `{file_skip_reason}`\n")
+
+            body_parts = []
+            if text_value:
+                body_parts.append(text_value)
+            if caption and caption != text_value:
+                body_parts.append(f"Caption: {caption}")
+
+            if body_parts:
+                f.write("\n")
+                f.write("\n\n".join(body_parts))
+                f.write("\n\n")
+            else:
+                f.write("\n_No text content_\n\n")
+
+            f.write("---\n\n")
+
+    return export_path, len(rows)
+
+
+def create_zip_export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=None):
+    export_path, count = export_interval(
+        since_dt,
+        until_dt,
+        chat_id=chat_id,
+        chat_title_for_filename=chat_title_for_filename,
+    )
+
+    scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
+    zip_path = EXPORT_DIR / f"04_full_archive_{scope}_work_shift.zip"
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    if chat_id is None:
+        cur.execute(
+            """
+            SELECT file_path
+            FROM messages
+            WHERE date_utc >= ?
+              AND date_utc < ?
+              AND file_path IS NOT NULL
+              AND file_skipped = 0
+            ORDER BY date_utc ASC
+            """,
+            (since_dt.isoformat(), until_dt.isoformat()),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT file_path
+            FROM messages
+            WHERE chat_id = ?
+              AND date_utc >= ?
+              AND date_utc < ?
+              AND file_path IS NOT NULL
+              AND file_skipped = 0
+            ORDER BY date_utc ASC
+            """,
+            (chat_id, since_dt.isoformat(), until_dt.isoformat()),
+        )
+
+    file_rows = cur.fetchall()
+    conn.close()
+
+    copied_files = 0
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(export_path, arcname=export_path.name)
+
+        for (relative_file_path,) in file_rows:
+            source_path = DATA_DIR / relative_file_path
+            if source_path.exists() and source_path.is_file():
+                zf.write(source_path, arcname=f"files/{source_path.name}")
+                copied_files += 1
+
+    return zip_path, count, copied_files
+
+
 def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
     since = datetime.now(timezone.utc) - timedelta(days=days)
 
@@ -1628,6 +1869,9 @@ def get_private_help_text() -> str:
 /work_package
 Рабочий пакет для ChatGPT: переписка, индекс вложений и промпт.
 
+/work_shift_package
+Рабочий пакет для ChatGPT за текущую смену 09:00–сейчас.
+
 /weekly_package
 Отправляет ZIP-архив за последние 7 дней и готовый промпт для Gemini.
 
@@ -1698,6 +1942,9 @@ def get_group_help_text() -> str:
 
 /work_package
 Рабочий пакет для ChatGPT: переписка, индекс вложений и промпт.
+
+/work_shift_package
+Рабочий пакет для ChatGPT за текущую смену 09:00–сейчас.
 
 /weekly_package
 ZIP-архив за последние 7 дней + готовый промпт для Gemini.
@@ -2419,6 +2666,94 @@ async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+    if not await ensure_chat_approved(update, context):
+        return
+
+    chat = update.effective_chat
+    chat_title = chat.title or chat.full_name or str(chat.id)
+
+    since_dt, until_dt, period_label = get_current_work_shift_interval()
+
+    await update.message.reply_text(
+        "Готовлю рабочий пакет за текущую смену для анализа в ChatGPT..."
+    )
+
+    export_path, message_count = export_interval(
+        since_dt,
+        until_dt,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+        period_label=period_label,
+    )
+
+    attachments_index_path, attachment_count = create_attachments_index(
+        1,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+        since_dt=since_dt,
+        until_dt=until_dt,
+        period_label=period_label,
+    )
+
+    prompt_path = create_prompt_file(
+        get_chatgpt_work_prompt(chat_title, 1, period_label),
+        chat_title_for_filename=chat_title,
+    )
+
+    await send_document_safely(
+        update,
+        context,
+        export_path,
+        caption=f"1/4. Переписка текущего чата за смену. Сообщений: {message_count}",
+    )
+
+    await send_document_safely(
+        update,
+        context,
+        attachments_index_path,
+        caption=f"2/4. Индекс вложений за смену. Вложений/файловых сообщений: {attachment_count}",
+    )
+
+    await send_document_safely(
+        update,
+        context,
+        prompt_path,
+        caption="3/4. Промпт для анализа рабочей смены в ChatGPT.",
+    )
+
+    await update.message.reply_text(
+        "Готовлю полный ZIP-архив смены с перепиской и вложениями. Это может занять немного времени..."
+    )
+
+    zip_path, zip_message_count, copied_files = create_zip_export_interval(
+        since_dt,
+        until_dt,
+        chat_id=chat.id,
+        chat_title_for_filename=chat_title,
+    )
+
+    await send_document_safely(
+        update,
+        context,
+        zip_path,
+        caption=(
+            f"4/4. Полный ZIP-архив текущего чата за смену.\n"
+            f"Период: {period_label}\n"
+            f"Сообщений: {zip_message_count}\n"
+            f"Файлов: {copied_files}\n\n"
+            "Используй его как источник вложений, если нужно открыть конкретные файлы из attachments_index.md."
+        ),
+    )
+
+    await update.message.reply_text(
+        "Рабочий пакет за смену готов. Загрузи в ChatGPT файлы 1–3 для структуры анализа, а ZIP используй как источник вложений при необходимости."
+    )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
@@ -2477,6 +2812,7 @@ def main():
     app.add_handler(CommandHandler("summary_prompt", summary_prompt))
     app.add_handler(CommandHandler("weekly_package", weekly_package))
     app.add_handler(CommandHandler("work_package", work_package))
+    app.add_handler(CommandHandler("work_shift_package", work_shift_package))
     app.add_handler(CommandHandler("cleanup_now", cleanup_now))
     app.add_handler(CommandHandler("purge_chat", purge_chat))
     app.add_handler(CommandHandler("purge_all_data", purge_all_data))
@@ -2512,6 +2848,7 @@ def main():
     print("/summary_prompt — промпт для Gemini")
     print("/weekly_package — ZIP за неделю + промпт для Gemini")
     print("/work_package — рабочий пакет для ChatGPT")
+    print("/work_shift_package — рабочий пакет за смену 09:00–сейчас")
     print("/cleanup_now — принудительная retention-очистка")
     print("/purge_chat <chat_id> — удалить архив конкретного чата")
     print("/purge_all_data CONFIRM — удалить весь архив")
