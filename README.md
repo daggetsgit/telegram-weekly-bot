@@ -2,7 +2,7 @@
 
 Telegram Work Summary Bot — это внутренний инструмент для сбора, архивации и подготовки рабочих Telegram-чатов к AI-анализу.
 
-Бот работает как тихий архиватор: он сохраняет сообщения и вложения из подтверждённых чатов, а затем по запросу администратора собирает структурированный пакет для анализа в ChatGPT.
+Бот работает как тихий архиватор: он сохраняет сообщения и вложения из подтверждённых чатов, а затем по запросу администратора собирает структурированный пакет для анализа в ChatGPT. При включённой настройке он также может автоматически расшифровывать Telegram voice/audio через OpenAI speech-to-text API во время сборки рабочего пакета.
 
 ## Основная идея
 
@@ -15,6 +15,7 @@ Telegram Work Summary Bot — это внутренний инструмент �
 - готовит Markdown-экспорт переписки;
 - создаёт индекс вложений;
 - собирает OCR-friendly contact sheets для изображений и скриншотов;
+- добавляет автоматические transcript для voice/audio, если включена OpenAI-транскрибация;
 - формирует полный ZIP с оригинальными файлами;
 - добавляет prompt для анализа в ChatGPT;
 - позволяет получить рабочую сводку, список задач, рисков и следующих шагов.
@@ -61,6 +62,14 @@ Markdown-файл с полной перепиской за выбранный �
 
 Если на contact sheet текст слишком мелкий или нужно проверить исходный документ, оригинальный файл можно найти в ZIP по `attachments_index.md`.
 
+Если для voice/audio создан transcript cache, в ZIP также добавляются `.transcript.txt` файлы в папку `transcripts/`.
+
+### `transcripts/*.transcript.txt`
+
+Автоматические расшифровки voice/audio, созданные при сборке рабочего пакета, если включена настройка `TRANSCRIBE_VOICE=true`.
+
+Transcript также добавляется в `01_chat_export.md` рядом с соответствующим voice/audio сообщением и в `02_attachments_index.md`. Каждый transcript помечается как automatic transcript с предупреждением: `Automatic transcript. Verify if critical.`
+
 ## Почему не просто ZIP
 
 Просто ZIP-архив плохо подходит для AI-анализа:
@@ -84,6 +93,7 @@ Markdown-файл с полной перепиской за выбранный �
 - Railway Volumes;
 - GitHub-based deployment;
 - Pillow для генерации contact sheets;
+- OpenAI API / speech-to-text для voice/audio transcription;
 - Markdown export pipeline;
 - ZIP archive pipeline;
 - private control flow через Telegram inline-кнопки;
@@ -98,9 +108,10 @@ Markdown-файл с полной перепиской за выбранный �
 
 - SQLite-база для сообщений и служебной информации;
 - файловое хранилище для вложений;
+- `data/transcripts` для cache автоматических расшифровок voice/audio;
 - Railway Volume для постоянного хранения между redeploy.
 
-Бот не отправляет данные в OpenAI API автоматически. AI-анализ выполняется вручную: пользователь сам загружает подготовленный пакет в ChatGPT.
+AI-анализ выполняется вручную: пользователь сам загружает подготовленный пакет в ChatGPT. При `TRANSCRIBE_VOICE=true` voice/audio за выбранный период отправляются в OpenAI transcription API во время сборки пакета, а результат сохраняется в transcript cache.
 
 ## Безопасность
 
@@ -112,7 +123,10 @@ Markdown-файл с полной перепиской за выбранный �
 - рабочие пакеты отправляются в личный чат администратора;
 - в группах бот работает в quiet mode;
 - Telegram bot token хранится только в переменных окружения;
+- `OPENAI_API_KEY` хранится только в Railway Variables;
 - токены и секреты не должны попадать в GitHub;
+- при включённой транскрибации voice/audio отправляются во внешний OpenAI API;
+- для чувствительных медицинских, страховых, финансовых и юридических данных нужно учитывать внутренние правила компании;
 - есть команды очистки и диагностики хранилища.
 
 ## Quiet mode
@@ -152,11 +166,34 @@ Prompt явно объясняет ChatGPT, что такие темы явля�
 
 ## Голосовые сообщения
 
-На первом этапе бот не делает автоматическую транскрибацию голосовых.
+Бот может автоматически транскрибировать Telegram voice/audio через OpenAI API, но только при сборке рабочего пакета.
 
-Он сохраняет voice/audio как вложения и добавляет их в `attachments_index.md` вместе с контекстом сообщений до и после.
+При получении сообщения бот не отправляет аудио в OpenAI. Он только сохраняет voice/audio как вложение. Если `TRANSCRIBE_VOICE=true`, то во время сборки пакета бот находит voice/audio за выбранный период, отправляет их в OpenAI transcription API и сохраняет результат в cache:
 
-Если голосовые важны для анализа, ChatGPT попросит пользователя вручную прислать расшифровку. Например, её можно скопировать из Telegram Premium.
+```text
+data/transcripts/YYYY-MM-DD/
+```
+
+Для каждого voice/audio создаются:
+
+```text
+<chat_id>_<message_id>_<file_unique_id>.transcript.json
+<chat_id>_<message_id>_<file_unique_id>.transcript.txt
+```
+
+Повторная сборка пакета использует cache и не вызывает OpenAI API заново, если transcript уже есть или если ранее был сохранён `failed/skipped` статус.
+
+Transcript добавляется:
+
+- в `01_chat_export.md` рядом с voice/audio сообщением;
+- в `02_attachments_index.md`;
+- в ZIP как `.transcript.txt` в папке `transcripts/`.
+
+Если транскрибация недоступна, API вернул ошибку, файл отсутствует или превышает лимит, пакет всё равно собирается. В таком случае в пакет добавляется статус `Transcript unavailable / failed` или `skipped` с причиной.
+
+Автоматические transcript нужно проверять по оригинальному аудио, если деталь критична. В пакет добавляется пометка: `Automatic transcript. Verify if critical.`
+
+Если transcript недоступен, можно использовать ручную расшифровку, например из Telegram Premium.
 
 ## Основные команды
 
@@ -203,9 +240,9 @@ MAX_TELEGRAM_SEND_SIZE_MB=49
 TELEGRAM_SEND_TIMEOUT_SECONDS=180
 APP_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
-BOT_VERSION=0.5.0
-BOT_BUILD_NAME=work-packages-private-control-contact-sheets
-BOT_BUILD_DATE=2026-06-12
+BOT_VERSION=0.6.0
+BOT_BUILD_NAME=openai-voice-transcription
+BOT_BUILD_DATE=2026-06-16
 ```
 
 Contact sheets:
@@ -215,6 +252,16 @@ CONTACT_SHEET_IMAGES_PER_PAGE=4
 CONTACT_SHEET_PAGE_WIDTH=3000
 CONTACT_SHEET_THUMB_WIDTH=1350
 CONTACT_SHEET_JPEG_QUALITY=92
+```
+
+OpenAI voice/audio transcription:
+
+```env
+OPENAI_API_KEY=your_openai_api_key
+TRANSCRIBE_VOICE=false
+TRANSCRIBE_MODEL=gpt-4o-mini-transcribe
+TRANSCRIBE_MAX_AUDIO_MB=25
+TRANSCRIBE_TIMEOUT_SECONDS=120
 ```
 
 ## Deployment
@@ -228,6 +275,26 @@ DEPLOYMENT_RU.md
 ## Current version
 
 ```text
-Version: 0.5.0
-Build: work-packages-private-control-contact-sheets
+Version: 0.6.0
+Build: openai-voice-transcription
+Build date: 2026-06-16
+```
+
+Enabled features:
+
+```text
+- approved chats
+- button-first private admin interface
+- private /report_chats with buttons
+- work packages for 7 days
+- work shift packages 09:00–now
+- attachments index
+- OCR-friendly image contact sheets
+- OpenAI voice/audio transcription
+- transcript cache
+- transcript files in ZIP
+- full archive ZIP
+- cleanup / purge commands
+- storage diagnostics
+- quiet group mode
 ```

@@ -79,6 +79,7 @@ worker: python bot.py
 ```
 
 `requirements.txt` должен включать зависимости проекта, включая `python-telegram-bot`, `python-dotenv` и `Pillow`.
+Для автоматической транскрибации voice/audio также используется `openai`.
 
 ## 6. Создать проект на Railway
 
@@ -116,9 +117,9 @@ MAX_TELEGRAM_SEND_SIZE_MB=49
 TELEGRAM_SEND_TIMEOUT_SECONDS=180
 APP_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
-BOT_VERSION=0.5.0
-BOT_BUILD_NAME=work-packages-private-control-contact-sheets
-BOT_BUILD_DATE=2026-06-12
+BOT_VERSION=0.6.0
+BOT_BUILD_NAME=openai-voice-transcription
+BOT_BUILD_DATE=2026-06-16
 ```
 
 Contact sheet settings:
@@ -130,7 +131,40 @@ CONTACT_SHEET_THUMB_WIDTH=1350
 CONTACT_SHEET_JPEG_QUALITY=92
 ```
 
+OpenAI voice/audio transcription:
+
+```env
+OPENAI_API_KEY=your_openai_api_key
+TRANSCRIBE_VOICE=false
+TRANSCRIBE_MODEL=gpt-4o-mini-transcribe
+TRANSCRIBE_MAX_AUDIO_MB=25
+TRANSCRIBE_TIMEOUT_SECONDS=120
+```
+
 После изменения variables Railway обычно делает redeploy.
+
+## 7.1 OpenAI API для транскрибации голосовых
+
+ChatGPT Plus и OpenAI API — это разные продукты. Подписка ChatGPT Plus не даёт автоматически API-доступ и не оплачивает API-запросы.
+
+Для транскрибации voice/audio нужно:
+
+1. Создать отдельный OpenAI Project.
+2. Включить billing или добавить credits.
+3. Создать API key внутри этого проекта.
+4. Не публиковать ключ и не коммитить его в GitHub.
+5. Добавить ключ в Railway Variables как `OPENAI_API_KEY`.
+
+Рекомендуемый безопасный rollout:
+
+1. Сначала оставить `TRANSCRIBE_VOICE=false`.
+2. Сделать deploy.
+3. Проверить `/version` и `/health`.
+4. Собрать обычный рабочий пакет без транскрибации.
+5. Потом включить `TRANSCRIBE_VOICE=true`.
+6. Протестировать на одном коротком voice в тестовом чате.
+
+Транскрибация выполняется только при сборке рабочего пакета. При получении сообщений бот сохраняет voice/audio как обычные вложения и не отправляет их в OpenAI API.
 
 ## 8. Добавить Railway Volume
 
@@ -189,10 +223,10 @@ Volume нужен, чтобы база и файлы не пропадали п�
 Основное управление выполняется в личном чате с ботом:
 
 ```text
-/report_chats
+/start
 ```
 
-Бот покажет подтверждённые чаты кнопками.
+Бот покажет личный кабинет администратора с кнопками. Старые текстовые команды, например `/report_chats`, остаются fallback и продолжают работать, если написать их вручную.
 
 Для каждого чата доступны варианты:
 
@@ -208,6 +242,8 @@ Volume нужен, чтобы база и файлы не пропадали п�
 04_image_contact_sheet_*.jpg
 05_full_archive.zip
 ```
+
+Если включена `TRANSCRIBE_VOICE=true`, голосовые и audio за выбранный период будут расшифрованы при сборке пакета. Transcript попадёт в `01_chat_export.md`, `02_attachments_index.md` и в ZIP в папку `transcripts/`.
 
 ## 12. Как анализировать пакет в ChatGPT
 
@@ -225,7 +261,9 @@ Volume нужен, чтобы база и файлы не пропадали п�
 Выполни анализ по инструкции из work_analysis_prompt.txt.
 ```
 
-Если в архиве были голосовые сообщения, ChatGPT может попросить вручную прислать их расшифровку. Если у пользователя есть Telegram Premium, расшифровку можно скопировать из Telegram и вставить в чат анализа.
+Если в пакете есть автоматические transcript, они помечаются предупреждением `Automatic transcript. Verify if critical.` Критичные медицинские, финансовые или юридические детали лучше сверять с оригинальным аудио.
+
+Если transcript недоступен, ChatGPT может попросить вручную прислать расшифровку. В этом случае можно использовать ручную расшифровку, например из Telegram Premium.
 
 ## 13. Проверка хранения
 
@@ -281,8 +319,12 @@ Volume нужен, чтобы база и файлы не пропадали п�
 - управление доступно только ADMIN_USER_IDS;
 - рабочие пакеты отправляются в личный чат администратора;
 - в группах бот работает в quiet mode;
-- бот сам не отправляет данные в OpenAI API;
-- AI-анализ выполняется вручную через ChatGPT после загрузки пакета пользователем.
+- AI-анализ выполняется вручную через ChatGPT после загрузки пакета пользователем;
+- `OPENAI_API_KEY` хранится только в Railway Variables;
+- ключ OpenAI нельзя публиковать, пересылать в общие чаты или коммитить в GitHub;
+- при `TRANSCRIBE_VOICE=true` voice/audio отправляются во внешний OpenAI API для транскрибации;
+- не включать транскрибацию без согласования, если внутренние правила компании запрещают такую обработку;
+- критичные медицинские, финансовые и юридические детали нужно проверять по оригинальному аудио.
 
 ## 16. Эксплуатационные рекомендации
 
@@ -293,7 +335,35 @@ Volume нужен, чтобы база и файлы не пропадали п�
 - Перед крупными изменениями делать git commit.
 - После deploy проверять `/version`.
 - В рабочих чатах использовать quiet mode.
-- Для отчётов пользоваться `/report_chats` в личке.
+- Для отчётов пользоваться `/start` в личке.
+- Если включена транскрибация, периодически проверять `data/transcripts` и Railway logs.
+
+## 16.1 Troubleshooting транскрибации
+
+Если transcript не появился:
+
+- проверить `TRANSCRIBE_VOICE`;
+- проверить `OPENAI_API_KEY`;
+- проверить billing или credits в OpenAI Project;
+- посмотреть Railway logs.
+
+Если OpenAI API вернул ошибку, рабочий пакет всё равно должен собраться. Причину можно искать в Railway logs и в failed cache внутри `data/transcripts/YYYY-MM-DD/`.
+
+Если повторная сборка не вызывает API, это ожидаемо: бот использует transcript cache. Cache со статусами `ok`, `failed` и `skipped` предотвращает повторные попытки.
+
+Если audio format не поддержан, временно выключить:
+
+```env
+TRANSCRIBE_VOICE=false
+```
+
+и чинить поддержку формата отдельным patch.
+
+Если API отвечает слишком долго, проверить:
+
+```env
+TRANSCRIBE_TIMEOUT_SECONDS=120
+```
 
 ## 17. Возможные улучшения
 
@@ -301,7 +371,7 @@ Volume нужен, чтобы база и файлы не пропадали п�
 
 - автоматическая отправка пакета администратору в 09:00;
 - отдельный daily report mode для selected chats;
-- автоматическая транскрибация voice/audio;
+- улучшение качества и диагностики автоматической транскрибации voice/audio;
 - более умная классификация скриншотов;
 - PDF-отчёт прямо из бота;
 - интеграция с OpenAI API для полностью автоматической сводки.
