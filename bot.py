@@ -19,6 +19,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from telegram.error import TelegramError, TimedOut
@@ -3011,8 +3012,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     reply_markup = None
 
-    if chat and chat.type == "private" and is_admin(update):
-        reply_markup = get_private_admin_inline_keyboard()
+    if chat and chat.type == "private":
+        await update.message.reply_text(
+            "Обновляю личный кабинет...",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+
+        if is_admin(update):
+            reply_markup = get_private_admin_inline_keyboard()
 
     await update.message.reply_text(
         "Личный кабинет\n\n"
