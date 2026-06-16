@@ -11,7 +11,15 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import (
+    Update,
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from telegram.error import TelegramError, TimedOut
 
@@ -4450,6 +4458,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error while saving message {message.message_id}: {e}")
 
 
+async def setup_bot_commands(app: Application):
+    await app.bot.set_my_commands(
+        [
+            BotCommand("start", "Личный кабинет"),
+        ],
+        scope=BotCommandScopeAllPrivateChats(),
+    )
+
+    await app.bot.set_my_commands(
+        [
+            BotCommand("status", "Статус бота в этом чате"),
+            BotCommand("help", "Краткая справка"),
+        ],
+        scope=BotCommandScopeAllGroupChats(),
+    )
+
+
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("Не найден TELEGRAM_BOT_TOKEN в файле .env")
@@ -4457,7 +4482,7 @@ def main():
     init_db()
     cleanup_old_data()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(setup_bot_commands).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
