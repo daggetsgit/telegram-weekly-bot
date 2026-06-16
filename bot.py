@@ -815,6 +815,22 @@ def get_storage_status_data():
     }
 
 
+def format_storage_status_text(data) -> str:
+    return (
+        "Storage status\n\n"
+        "Database:\n"
+        f"messages.db: {human_file_size(data['db_size'])}\n"
+        f"Messages rows: {data['message_count']}\n"
+        f"DB file records: {data['db_file_count']}\n"
+        f"Known chats: {data['chats_count']}\n\n"
+        "Directories:\n"
+        f"data/files: {human_file_size(data['files_size'])} / {data['files_count']} files\n"
+        f"data/exports: {human_file_size(data['exports_size'])} / {data['exports_count']} files\n"
+        f"data total: {human_file_size(data['data_size'])} / {data['data_count']} files\n\n"
+        "If messages rows are low but messages.db is large, run /vacuum_db."
+    )
+
+
 def vacuum_database():
     before_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
 
@@ -2268,6 +2284,16 @@ def get_private_admin_keyboard():
     )
 
 
+def get_private_admin_inline_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 Собрать рабочий пакет", callback_data="admin:reports")],
+        [InlineKeyboardButton("✅ Подтверждённые чаты", callback_data="admin:approved")],
+        [InlineKeyboardButton("🕓 Ожидают подтверждения", callback_data="admin:pending")],
+        [InlineKeyboardButton("💾 Статус хранилища", callback_data="admin:storage")],
+        [InlineKeyboardButton("🆘 Помощь", callback_data="admin:help")],
+    ])
+
+
 def get_private_help_text() -> str:
     return """Личный кабинет бота
 
@@ -2419,7 +2445,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = None
 
     if chat and chat.type == "private":
-        reply_markup = get_private_admin_keyboard()
+        reply_markup = get_private_admin_inline_keyboard()
         help_text = get_private_help_text()
     else:
         help_text = get_group_help_text()
@@ -2435,11 +2461,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = None
 
     if chat and chat.type == "private" and is_admin(update):
-        reply_markup = get_private_admin_keyboard()
+        reply_markup = get_private_admin_inline_keyboard()
 
     await update.message.reply_text(
-        "Бот работает. Я сохраняю сообщения и вложения из подтверждённых чатов для недельного архива.\n\n"
-        "Напиши /help, чтобы посмотреть доступные команды.",
+        "Личный кабинет\n\n"
+        "Бот работает. Я сохраняю сообщения и вложения из подтверждённых чатов для архива.\n\n"
+        "Выбери действие кнопкой ниже или используй текстовые команды как раньше.",
         reply_markup=reply_markup,
     )
 
@@ -2925,15 +2952,25 @@ async def remove_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("chat_id должен быть числом.")
         return
 
+    ok, text = remove_chat_by_id(chat_id)
+
+    if not ok:
+        await update.message.reply_text(text)
+        return
+
+    await update.message.reply_text(text)
+
+
+def remove_chat_by_id(chat_id: int):
     ok = delete_chat_record(chat_id)
 
     if not ok:
-        await update.message.reply_text("Чат не найден.")
-        return
+        return False, "Чат не найден."
 
-    await update.message.reply_text(
+    return (
+        True,
         f"Чат {chat_id} удалён из списка. "
-        "При следующем сообщении бот снова запросит подтверждение администратора."
+        "При следующем сообщении бот снова запросит подтверждение администратора.",
     )
 
 
@@ -3203,19 +3240,7 @@ async def storage_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = get_storage_status_data()
 
-    await update.message.reply_text(
-        "Storage status\n\n"
-        "Database:\n"
-        f"messages.db: {human_file_size(data['db_size'])}\n"
-        f"Messages rows: {data['message_count']}\n"
-        f"DB file records: {data['db_file_count']}\n"
-        f"Known chats: {data['chats_count']}\n\n"
-        "Directories:\n"
-        f"data/files: {human_file_size(data['files_size'])} / {data['files_count']} files\n"
-        f"data/exports: {human_file_size(data['exports_size'])} / {data['exports_count']} files\n"
-        f"data total: {human_file_size(data['data_size'])} / {data['data_count']} files\n\n"
-        "If messages rows are low but messages.db is large, run /vacuum_db."
-    )
+    await update.message.reply_text(format_storage_status_text(data))
 
 
 async def vacuum_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3251,20 +3276,22 @@ async def group_private_control_notice(update: Update) -> bool:
     return False
 
 
-async def report_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await admin_only(update):
-        return
+async def send_or_edit_admin_text(message, text: str, reply_markup=None, edit: bool = False):
+    if edit:
+        await message.edit_text(text, reply_markup=reply_markup)
+    else:
+        await message.reply_text(text, reply_markup=reply_markup)
 
-    if update.effective_chat.type != "private":
-        await update.message.reply_text(
-            "Управление рабочими пакетами лучше делать в личке с ботом, чтобы не шуметь в рабочем чате."
-        )
-        return
 
+async def show_report_chats_selection(message, edit: bool = False):
     chats = get_approved_report_chats()
 
     if not chats:
-        await update.message.reply_text("Нет подтверждённых групповых чатов для отчётов.")
+        await send_or_edit_admin_text(
+            message,
+            "Нет подтверждённых групповых чатов для отчётов.",
+            edit=edit,
+        )
         return
 
     keyboard = []
@@ -3281,10 +3308,210 @@ async def report_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         )
 
-    await update.message.reply_text(
+    await send_or_edit_admin_text(
+        message,
         "Выбери чат и тип рабочего пакета:",
         reply_markup=InlineKeyboardMarkup(keyboard),
+        edit=edit,
     )
+
+
+async def show_pending_chats_selection(message, edit: bool = False):
+    rows = list_chats_by_status("pending")
+
+    if not rows:
+        await send_or_edit_admin_text(
+            message,
+            "Нет чатов, ожидающих подтверждения.",
+            reply_markup=get_private_admin_inline_keyboard(),
+            edit=edit,
+        )
+        return
+
+    keyboard = []
+
+    for chat_id, chat_title, chat_type, requested_at, last_seen_at in rows:
+        title = chat_title or str(chat_id)
+        keyboard.append([InlineKeyboardButton(f"{title} ({chat_type})", callback_data=f"noop:{chat_id}")])
+        keyboard.append(
+            [
+                InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve_chat:{chat_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_chat:{chat_id}"),
+            ]
+        )
+
+    keyboard.append([InlineKeyboardButton("↩️ В кабинет", callback_data="admin:home")])
+
+    await send_or_edit_admin_text(
+        message,
+        "Чаты, ожидающие подтверждения:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        edit=edit,
+    )
+
+
+async def show_approved_chats_selection(message, edit: bool = False):
+    chats = get_approved_report_chats()
+
+    if not chats:
+        await send_or_edit_admin_text(
+            message,
+            "Нет подтверждённых групповых чатов для отчётов.",
+            reply_markup=get_private_admin_inline_keyboard(),
+            edit=edit,
+        )
+        return
+
+    keyboard = []
+
+    for chat in chats:
+        title = chat["title"]
+        chat_id = chat["chat_id"]
+
+        keyboard.append([InlineKeyboardButton(f"📌 {title}", callback_data=f"noop:{chat_id}")])
+        keyboard.append(
+            [
+                InlineKeyboardButton("📦 Пакет", callback_data=f"admin:package:{chat_id}"),
+                InlineKeyboardButton("❌ Отключить", callback_data=f"admin:remove_prompt:{chat_id}"),
+            ]
+        )
+
+    keyboard.append([InlineKeyboardButton("↩️ В кабинет", callback_data="admin:home")])
+
+    await send_or_edit_admin_text(
+        message,
+        "Подтверждённые чаты:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        edit=edit,
+    )
+
+
+async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+
+    if not query:
+        return
+
+    user = query.from_user
+
+    if not user or user.id not in ADMIN_USER_IDS:
+        await query.answer("Эта кнопка доступна только администратору бота.", show_alert=True)
+        return
+
+    if not query.message or query.message.chat.type != "private":
+        await query.answer("Управление доступно в личном чате с ботом.", show_alert=True)
+        return
+
+    data = query.data or ""
+    await query.answer()
+
+    if data == "admin:home":
+        await query.message.edit_text(
+            "Личный кабинет\n\nВыбери действие:",
+            reply_markup=get_private_admin_inline_keyboard(),
+        )
+        return
+
+    if data == "admin:reports":
+        await show_report_chats_selection(query.message, edit=True)
+        return
+
+    if data == "admin:pending":
+        await show_pending_chats_selection(query.message, edit=True)
+        return
+
+    if data == "admin:approved":
+        await show_approved_chats_selection(query.message, edit=True)
+        return
+
+    if data == "admin:storage":
+        await query.message.edit_text(
+            format_storage_status_text(get_storage_status_data()),
+            reply_markup=get_private_admin_inline_keyboard(),
+        )
+        return
+
+    if data == "admin:help":
+        await query.message.edit_text(
+            get_private_help_text(),
+            reply_markup=get_private_admin_inline_keyboard(),
+        )
+        return
+
+    if data.startswith("admin:package:"):
+        try:
+            chat_id = int(data.split(":", 2)[2])
+        except ValueError:
+            await query.message.reply_text("Некорректный chat_id.")
+            return
+
+        chat_title = get_approved_chat_title(chat_id)
+
+        if not chat_title:
+            await query.message.edit_text(
+                "Этот чат не найден среди подтверждённых. Обнови список.",
+                reply_markup=get_private_admin_inline_keyboard(),
+            )
+            return
+
+        await query.message.edit_text(
+            f"Выбери тип рабочего пакета для чата:\n{chat_title}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Смена 09:00–сейчас", callback_data=f"workpkg:shift:{chat_id}"),
+                    InlineKeyboardButton("7 дней", callback_data=f"workpkg:week:{chat_id}"),
+                ],
+                [InlineKeyboardButton("↩️ К списку чатов", callback_data="admin:approved")],
+            ]),
+        )
+        return
+
+    if data.startswith("admin:remove_prompt:"):
+        try:
+            chat_id = int(data.split(":", 2)[2])
+        except ValueError:
+            await query.message.reply_text("Некорректный chat_id.")
+            return
+
+        chat_title = get_approved_chat_title(chat_id) or str(chat_id)
+
+        await query.message.edit_text(
+            f"Отключить чат {chat_title}?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Да, отключить", callback_data=f"admin:remove_confirm:{chat_id}")],
+                [InlineKeyboardButton("Отмена", callback_data="admin:approved")],
+            ]),
+        )
+        return
+
+    if data.startswith("admin:remove_confirm:"):
+        try:
+            chat_id = int(data.split(":", 2)[2])
+        except ValueError:
+            await query.message.reply_text("Некорректный chat_id.")
+            return
+
+        ok, text = remove_chat_by_id(chat_id)
+        await query.message.edit_text(
+            text,
+            reply_markup=get_private_admin_inline_keyboard() if ok else None,
+        )
+        return
+
+    await query.message.reply_text("Неизвестное действие.")
+
+
+async def report_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(
+            "Управление рабочими пакетами лучше делать в личке с ботом, чтобы не шуметь в рабочем чате."
+        )
+        return
+
+    await show_report_chats_selection(update.message)
 
 
 async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3690,6 +3917,7 @@ def main():
     app.add_handler(CommandHandler("purge_all_data", purge_all_data))
     app.add_handler(CommandHandler("friendly_prompt", friendly_prompt))
     app.add_handler(CommandHandler("friendly_package", friendly_package))
+    app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin:"))
     app.add_handler(CallbackQueryHandler(work_package_callback, pattern=r"^(workpkg|noop):"))
     app.add_handler(CallbackQueryHandler(chat_approval_callback, pattern="^(approve_chat|reject_chat):"))
 
