@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import sqlite3
 import logging
 import shutil
@@ -46,6 +47,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 EXPORT_DIR = DATA_DIR / "exports"
 FILES_DIR = DATA_DIR / "files"
+TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
 DB_PATH = DATA_DIR / "messages.db"
 RETENTION_DAYS = 14
 
@@ -976,6 +978,219 @@ def resolve_stored_file_path(file_path_value):
     return None
 
 
+def get_transcript_cache_paths(chat_id, message_id, file_unique_id, date_utc=None, file_path_value=None):
+    if not file_unique_id:
+        return []
+
+    base_name = safe_filename(f"{chat_id}_{message_id}_{file_unique_id}")
+    date_folders = []
+
+    if date_utc:
+        try:
+            parsed_dt = datetime.fromisoformat(date_utc)
+            date_folders.append(parsed_dt.astimezone(APP_TIMEZONE).strftime("%Y-%m-%d"))
+            date_folders.append(parsed_dt.astimezone(timezone.utc).strftime("%Y-%m-%d"))
+        except Exception:
+            date_folders.append(str(date_utc)[:10])
+
+    if file_path_value:
+        stored_path = Path(file_path_value)
+        if len(stored_path.parts) >= 2:
+            date_folders.append(stored_path.parts[-2])
+
+    seen = set()
+    paths = []
+
+    for folder in date_folders:
+        if not folder or folder in seen:
+            continue
+        seen.add(folder)
+        transcript_dir = TRANSCRIPTS_DIR / folder
+        paths.append(
+            {
+                "json": transcript_dir / f"{base_name}.transcript.json",
+                "txt": transcript_dir / f"{base_name}.transcript.txt",
+            }
+        )
+
+    return paths
+
+
+def load_transcript_cache(chat_id, message_id, file_unique_id, date_utc=None, file_path_value=None):
+    for cache_paths in get_transcript_cache_paths(chat_id, message_id, file_unique_id, date_utc, file_path_value):
+        json_path = cache_paths["json"]
+        txt_path = cache_paths["txt"]
+
+        if not json_path.exists() and not txt_path.exists():
+            continue
+
+        if json_path.exists():
+            try:
+                cache = json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                return {
+                    "status": "failed",
+                    "error": f"Could not read transcript cache: {e}",
+                    "note": "Transcript unavailable / failed.",
+                    "json_path": str(json_path),
+                    "txt_path": str(txt_path) if txt_path.exists() else None,
+                }
+
+            if not isinstance(cache, dict):
+                cache = {
+                    "status": "failed",
+                    "error": "Transcript cache JSON is not an object.",
+                    "note": "Transcript unavailable / failed.",
+                }
+
+            cache["json_path"] = str(json_path)
+            cache["txt_path"] = str(txt_path) if txt_path.exists() else None
+            return cache
+
+        if txt_path.exists():
+            try:
+                text = txt_path.read_text(encoding="utf-8").strip()
+            except Exception as e:
+                return {
+                    "status": "failed",
+                    "error": f"Could not read transcript text cache: {e}",
+                    "note": "Transcript unavailable / failed.",
+                    "txt_path": str(txt_path),
+                }
+
+            return {
+                "status": "ok",
+                "text": text,
+                "note": "Automatic transcript. Verify if critical.",
+                "txt_path": str(txt_path),
+            }
+
+    return None
+
+
+def format_transcript_for_export(transcript_cache, style: str = "message"):
+    if not transcript_cache:
+        return None
+
+    status = str(transcript_cache.get("status") or "").lower()
+    note = transcript_cache.get("note") or "Automatic transcript. Verify if critical."
+
+    if status == "ok":
+        text = str(transcript_cache.get("text") or "").strip()
+        if not text:
+            status = "failed"
+            transcript_cache = {
+                **transcript_cache,
+                "status": "failed",
+                "error": "Transcript cache has status ok but empty text.",
+                "note": "Transcript unavailable / failed.",
+            }
+        else:
+            if style == "attachment":
+                return (
+                    "- Transcript status: `ok`\n"
+                    f"- Transcript note: {note}\n\n"
+                    "### Transcript\n\n"
+                    f"{text}\n"
+                )
+
+            return (
+                "Transcript status: ok\n"
+                f"Transcript note: {note}\n\n"
+                "Automatic transcript:\n"
+                f"{text}"
+            )
+
+    reason = transcript_cache.get("error") or transcript_cache.get("reason") or "unknown reason"
+    status_label = status or "unavailable"
+
+    if style == "attachment":
+        return (
+            f"- Transcript status: `{status_label}`\n"
+            "- Transcript: `unavailable`\n"
+            f"- Transcript reason: {reason}\n"
+            f"- Transcript note: {note}\n"
+        )
+
+    return (
+        f"Transcript unavailable ({status_label}).\n"
+        f"Reason: {reason}\n"
+        f"Note: {note}"
+    )
+
+
+def get_transcript_text_file_for_zip(chat_id, message_id, file_unique_id, date_utc=None, file_path_value=None):
+    cache = load_transcript_cache(chat_id, message_id, file_unique_id, date_utc, file_path_value)
+
+    if cache and cache.get("txt_path"):
+        txt_path = Path(cache["txt_path"])
+        if txt_path.exists() and txt_path.is_file():
+            return txt_path
+
+    return None
+
+
+def collect_transcript_files_for_period(since_dt, until_dt=None, chat_id=None):
+    if until_dt is None:
+        until_dt = datetime.now(timezone.utc)
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    if chat_id is None:
+        cur.execute(
+            """
+            SELECT chat_id, message_id, file_unique_id, date_utc, file_path
+            FROM messages
+            WHERE date_utc >= ?
+              AND date_utc < ?
+              AND message_type IN ('voice', 'audio')
+            ORDER BY date_utc ASC
+            """,
+            (since_dt.isoformat(), until_dt.isoformat()),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT chat_id, message_id, file_unique_id, date_utc, file_path
+            FROM messages
+            WHERE chat_id = ?
+              AND date_utc >= ?
+              AND date_utc < ?
+              AND message_type IN ('voice', 'audio')
+            ORDER BY date_utc ASC
+            """,
+            (chat_id, since_dt.isoformat(), until_dt.isoformat()),
+        )
+
+    rows = cur.fetchall()
+    conn.close()
+
+    transcript_files = []
+    seen = set()
+
+    for row_chat_id, message_id, file_unique_id, date_utc, file_path_value in rows:
+        txt_path = get_transcript_text_file_for_zip(
+            row_chat_id,
+            message_id,
+            file_unique_id,
+            date_utc,
+            file_path_value,
+        )
+
+        if not txt_path:
+            continue
+
+        path_key = str(txt_path)
+        if path_key in seen:
+            continue
+
+        seen.add(path_key)
+        transcript_files.append((row_chat_id, message_id, txt_path))
+
+    return transcript_files
+
+
 def load_contact_sheet_font(size: int):
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -1228,7 +1443,7 @@ def create_attachments_index(days: int = 7, chat_id=None, chat_title_for_filenam
         query = f"""
             SELECT
                 id, chat_id, chat_title, message_id, date_utc, username, full_name,
-                message_type, text, caption, file_id, file_name, file_mime_type,
+                message_type, text, caption, file_id, file_unique_id, file_name, file_mime_type,
                 file_size, file_path, file_skipped, file_skip_reason
             FROM messages
             WHERE {base_where}
@@ -1239,7 +1454,7 @@ def create_attachments_index(days: int = 7, chat_id=None, chat_title_for_filenam
         query = f"""
             SELECT
                 id, chat_id, chat_title, message_id, date_utc, username, full_name,
-                message_type, text, caption, file_id, file_name, file_mime_type,
+                message_type, text, caption, file_id, file_unique_id, file_name, file_mime_type,
                 file_size, file_path, file_skipped, file_skip_reason
             FROM messages
             WHERE chat_id = ?
@@ -1271,7 +1486,7 @@ def create_attachments_index(days: int = 7, chat_id=None, chat_title_for_filenam
         for number, row in enumerate(rows, start=1):
             (
                 db_id, row_chat_id, row_chat_title, message_id, date_utc, username, full_name,
-                message_type, text_value, caption, file_id, file_name, file_mime_type,
+                message_type, text_value, caption, file_id, file_unique_id, file_name, file_mime_type,
                 file_size, file_path, file_skipped, file_skip_reason
             ) = row
 
@@ -1297,8 +1512,20 @@ def create_attachments_index(days: int = 7, chat_id=None, chat_title_for_filenam
                 f.write(f"- Skip reason: `{file_skip_reason}`\n")
 
             if message_type in ("voice", "audio"):
-                f.write("- Transcript: `not available`\n")
-                f.write("- Transcript note: ask user to paste Telegram Premium transcript if needed.\n")
+                transcript_cache = load_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    date_utc,
+                    file_path,
+                )
+                transcript_text = format_transcript_for_export(transcript_cache, style="attachment")
+
+                if transcript_text:
+                    f.write(transcript_text)
+                else:
+                    f.write("- Transcript: `not available`\n")
+                    f.write("- Transcript note: ask user to paste Telegram Premium transcript if needed.\n")
 
             if caption:
                 f.write(f"- Caption: {caption}\n")
@@ -1430,6 +1657,16 @@ def create_zip_export(days: int = 7, chat_id=None, chat_title_for_filename=None)
 
         shutil.copy2(source_path, target_path)
         copied_files += 1
+
+    transcript_rows = collect_transcript_files_for_period(since, chat_id=chat_id)
+
+    if transcript_rows:
+        temp_transcripts_dir = temp_dir / "transcripts"
+        temp_transcripts_dir.mkdir(exist_ok=True)
+
+        for transcript_chat_id, transcript_message_id, transcript_path in transcript_rows:
+            target_name = safe_filename(f"{transcript_chat_id}_{transcript_message_id}_{transcript_path.name}")
+            shutil.copy2(transcript_path, temp_transcripts_dir / target_name)
 
     shutil.make_archive(
         base_name=str(zip_path.with_suffix("")),
@@ -1567,6 +1804,7 @@ def export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=No
                 message_type,
                 text,
                 caption,
+                file_unique_id,
                 file_name,
                 file_mime_type,
                 file_size,
@@ -1593,6 +1831,7 @@ def export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=No
                 message_type,
                 text,
                 caption,
+                file_unique_id,
                 file_name,
                 file_mime_type,
                 file_size,
@@ -1637,6 +1876,7 @@ def export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=No
                 message_type,
                 text_value,
                 caption,
+                file_unique_id,
                 file_name,
                 file_mime_type,
                 file_size,
@@ -1686,6 +1926,19 @@ def export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=No
                 body_parts.append(text_value)
             if caption and caption != text_value:
                 body_parts.append(f"Caption: {caption}")
+
+            if message_type in ("voice", "audio"):
+                transcript_cache = load_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    date_utc,
+                    file_path,
+                )
+                transcript_text = format_transcript_for_export(transcript_cache)
+
+                if transcript_text:
+                    body_parts.append(transcript_text)
 
             if body_parts:
                 f.write("\n")
@@ -1762,6 +2015,14 @@ def create_zip_export_interval(since_dt, until_dt, chat_id=None, chat_title_for_
             if source_path.exists() and source_path.is_file():
                 zf.write(source_path, arcname=f"files/{source_path.name}")
                 copied_files += 1
+
+        for transcript_chat_id, transcript_message_id, transcript_path in collect_transcript_files_for_period(
+            since_dt,
+            until_dt,
+            chat_id=chat_id,
+        ):
+            arcname = safe_filename(f"{transcript_chat_id}_{transcript_message_id}_{transcript_path.name}")
+            zf.write(transcript_path, arcname=f"transcripts/{arcname}")
 
     return zip_path, count, copied_files
 
@@ -1851,6 +2112,7 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
         cur.execute(
             """
             SELECT
+                chat_id,
                 date_utc,
                 chat_title,
                 message_id,
@@ -1860,6 +2122,7 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
                 text,
                 caption,
                 reply_to_message_id,
+                file_unique_id,
                 file_name,
                 file_mime_type,
                 file_size,
@@ -1876,6 +2139,7 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
         cur.execute(
             """
             SELECT
+                chat_id,
                 date_utc,
                 chat_title,
                 message_id,
@@ -1885,6 +2149,7 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
                 text,
                 caption,
                 reply_to_message_id,
+                file_unique_id,
                 file_name,
                 file_mime_type,
                 file_size,
@@ -1915,6 +2180,7 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
 
         for row in rows:
             (
+                row_chat_id,
                 date_utc,
                 chat_title,
                 message_id,
@@ -1924,6 +2190,7 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
                 text,
                 caption,
                 reply_to_message_id,
+                file_unique_id,
                 file_name,
                 file_mime_type,
                 file_size,
@@ -1964,11 +2231,28 @@ def export_last_days(days: int = 7, chat_id=None, chat_title_for_filename=None):
                 f.write(f"- File skipped: `yes`\n")
                 f.write(f"- Skip reason: `{file_skip_reason}`\n")
 
+            content_parts = []
             content = text or caption or ""
 
             if content:
+                content_parts.append(content.strip())
+
+            if message_type in ("voice", "audio"):
+                transcript_cache = load_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    date_utc,
+                    file_path,
+                )
+                transcript_text = format_transcript_for_export(transcript_cache)
+
+                if transcript_text:
+                    content_parts.append(transcript_text)
+
+            if content_parts:
                 f.write("\n")
-                f.write(content.strip())
+                f.write("\n\n".join(content_parts))
                 f.write("\n\n")
             else:
                 f.write("\n")
