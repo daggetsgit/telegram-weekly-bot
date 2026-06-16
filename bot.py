@@ -20,6 +20,14 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+
+def get_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
 ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS", "")
 ADMIN_USER_ID_PARTS = [x.strip() for x in ADMIN_USER_IDS_RAW.split(",") if x.strip()]
 ADMIN_USER_IDS = (
@@ -42,6 +50,12 @@ CONTACT_SHEET_IMAGES_PER_PAGE = int(os.getenv("CONTACT_SHEET_IMAGES_PER_PAGE", "
 CONTACT_SHEET_PAGE_WIDTH = int(os.getenv("CONTACT_SHEET_PAGE_WIDTH", "3000"))
 CONTACT_SHEET_THUMB_WIDTH = int(os.getenv("CONTACT_SHEET_THUMB_WIDTH", "1350"))
 CONTACT_SHEET_JPEG_QUALITY = int(os.getenv("CONTACT_SHEET_JPEG_QUALITY", "92"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TRANSCRIBE_VOICE = os.getenv("TRANSCRIBE_VOICE", "false").strip().lower() in ("1", "true", "yes", "on")
+TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
+TRANSCRIBE_MAX_AUDIO_MB = int(os.getenv("TRANSCRIBE_MAX_AUDIO_MB", "25"))
+TRANSCRIBE_MAX_AUDIO_BYTES = TRANSCRIBE_MAX_AUDIO_MB * 1024 * 1024
+TRANSCRIBE_TIMEOUT_SECONDS = get_int_env("TRANSCRIBE_TIMEOUT_SECONDS", 120)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -1068,6 +1082,34 @@ def load_transcript_cache(chat_id, message_id, file_unique_id, date_utc=None, fi
     return None
 
 
+def save_transcript_cache(chat_id, message_id, file_unique_id, cache_data, date_utc=None, file_path_value=None):
+    cache_paths = get_transcript_cache_paths(chat_id, message_id, file_unique_id, date_utc, file_path_value)
+
+    if not cache_paths:
+        logging.warning("Could not save transcript cache: missing cache path for message %s", message_id)
+        return False
+
+    json_path = cache_paths[0]["json"]
+    txt_path = cache_paths[0]["txt"]
+
+    try:
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(
+            json.dumps(cache_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        if cache_data.get("status") == "ok":
+            text = str(cache_data.get("text") or "").strip()
+            if text:
+                txt_path.write_text(text + "\n", encoding="utf-8")
+
+        return True
+    except Exception as e:
+        logging.warning("Could not save transcript cache for message %s: %s", message_id, e)
+        return False
+
+
 def format_transcript_for_export(transcript_cache, style: str = "message"):
     if not transcript_cache:
         return None
@@ -1128,6 +1170,223 @@ def get_transcript_text_file_for_zip(chat_id, message_id, file_unique_id, date_u
             return txt_path
 
     return None
+
+
+def transcribe_audio_file(file_path: Path) -> str:
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=OPENAI_API_KEY,
+        timeout=TRANSCRIBE_TIMEOUT_SECONDS,
+    )
+
+    with file_path.open("rb") as audio_file:
+        transcription = client.audio.transcriptions.create(
+            model=TRANSCRIBE_MODEL,
+            file=audio_file,
+        )
+
+    text = getattr(transcription, "text", None)
+
+    if text is None:
+        text = str(transcription)
+
+    return text.strip()
+
+
+def prepare_transcripts_for_period(since_dt, until_dt, chat_id=None):
+    if not TRANSCRIBE_VOICE:
+        return {"processed": 0, "created": 0, "skipped": 0, "failed": 0, "cached": 0}
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    if chat_id is None:
+        cur.execute(
+            """
+            SELECT chat_id, message_id, file_unique_id, date_utc, file_path, file_size
+            FROM messages
+            WHERE date_utc >= ?
+              AND date_utc < ?
+              AND message_type IN ('voice', 'audio')
+            ORDER BY date_utc ASC
+            """,
+            (since_dt.isoformat(), until_dt.isoformat()),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT chat_id, message_id, file_unique_id, date_utc, file_path, file_size
+            FROM messages
+            WHERE chat_id = ?
+              AND date_utc >= ?
+              AND date_utc < ?
+              AND message_type IN ('voice', 'audio')
+            ORDER BY date_utc ASC
+            """,
+            (chat_id, since_dt.isoformat(), until_dt.isoformat()),
+        )
+
+    rows = cur.fetchall()
+    conn.close()
+
+    stats = {"processed": len(rows), "created": 0, "skipped": 0, "failed": 0, "cached": 0}
+
+    for row_chat_id, message_id, file_unique_id, date_utc, file_path_value, file_size in rows:
+        try:
+            existing_cache = load_transcript_cache(
+                row_chat_id,
+                message_id,
+                file_unique_id,
+                date_utc,
+                file_path_value,
+            )
+
+            if existing_cache and str(existing_cache.get("status") or "").lower() in ("ok", "failed", "skipped"):
+                stats["cached"] += 1
+                continue
+
+            source_path = resolve_stored_file_path(file_path_value)
+            base_cache = {
+                "model": TRANSCRIBE_MODEL,
+                "source_file_path": file_path_value,
+                "generated_at": datetime.now(APP_TIMEZONE).isoformat(),
+            }
+
+            if not file_unique_id:
+                save_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    {
+                        **base_cache,
+                        "status": "failed",
+                        "error": "Missing file_unique_id for transcript cache key.",
+                        "note": "Transcript unavailable / failed.",
+                    },
+                    date_utc,
+                    file_path_value,
+                )
+                stats["failed"] += 1
+                continue
+
+            if not source_path or not source_path.exists():
+                save_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    {
+                        **base_cache,
+                        "status": "failed",
+                        "error": "Audio file not found on server.",
+                        "note": "Transcript unavailable / failed.",
+                    },
+                    date_utc,
+                    file_path_value,
+                )
+                stats["failed"] += 1
+                continue
+
+            actual_file_size = source_path.stat().st_size
+            size_for_limit = file_size or actual_file_size
+
+            if size_for_limit > TRANSCRIBE_MAX_AUDIO_BYTES:
+                save_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    {
+                        **base_cache,
+                        "status": "skipped",
+                        "error": (
+                            f"Audio file size {size_for_limit} bytes exceeds "
+                            f"TRANSCRIBE_MAX_AUDIO_MB={TRANSCRIBE_MAX_AUDIO_MB}."
+                        ),
+                        "note": "Transcript unavailable / skipped.",
+                    },
+                    date_utc,
+                    file_path_value,
+                )
+                stats["skipped"] += 1
+                continue
+
+            if not OPENAI_API_KEY:
+                save_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    {
+                        **base_cache,
+                        "status": "failed",
+                        "error": "OPENAI_API_KEY is not configured.",
+                        "note": "Transcript unavailable / failed.",
+                    },
+                    date_utc,
+                    file_path_value,
+                )
+                stats["failed"] += 1
+                continue
+
+            try:
+                transcript_text = transcribe_audio_file(source_path)
+            except Exception as e:
+                logging.exception("Could not transcribe audio message %s", message_id)
+                save_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    {
+                        **base_cache,
+                        "status": "failed",
+                        "error": str(e),
+                        "note": "Transcript unavailable / failed.",
+                    },
+                    date_utc,
+                    file_path_value,
+                )
+                stats["failed"] += 1
+                continue
+
+            if not transcript_text:
+                save_transcript_cache(
+                    row_chat_id,
+                    message_id,
+                    file_unique_id,
+                    {
+                        **base_cache,
+                        "status": "failed",
+                        "error": "OpenAI transcription returned empty text.",
+                        "note": "Transcript unavailable / failed.",
+                    },
+                    date_utc,
+                    file_path_value,
+                )
+                stats["failed"] += 1
+                continue
+
+            save_transcript_cache(
+                row_chat_id,
+                message_id,
+                file_unique_id,
+                {
+                    **base_cache,
+                    "status": "ok",
+                    "text": transcript_text,
+                    "note": "Automatic transcript. Verify if critical.",
+                },
+                date_utc,
+                file_path_value,
+            )
+            stats["created"] += 1
+
+        except Exception as e:
+            logging.exception("Unexpected transcript preparation error for message %s", message_id)
+            stats["failed"] += 1
+
+    if any(stats[key] for key in ("created", "skipped", "failed")):
+        logging.warning("Transcript preparation completed: %s", stats)
+
+    return stats
 
 
 def collect_transcript_files_for_period(since_dt, until_dt=None, chat_id=None):
@@ -3383,6 +3642,12 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             text=f"Готовлю рабочий пакет за смену для чата: {source_chat_title}\nПериод: {period_label}",
         )
 
+        prepare_transcripts_for_period(
+            since_dt,
+            until_dt,
+            chat_id=source_chat_id,
+        )
+
         export_path, message_count = export_interval(
             since_dt,
             until_dt,
@@ -3427,6 +3692,15 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
         await context.bot.send_message(
             chat_id=target_chat_id,
             text=f"Готовлю рабочий пакет за последние 7 дней для чата: {source_chat_title}",
+        )
+
+        until_dt = datetime.now(timezone.utc)
+        since_dt = until_dt - timedelta(days=7)
+
+        prepare_transcripts_for_period(
+            since_dt,
+            until_dt,
+            chat_id=source_chat_id,
         )
 
         export_path, message_count = export_last_days(
@@ -3930,6 +4204,15 @@ async def work_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Готовлю рабочий пакет для анализа в ChatGPT: переписка, индекс вложений и промпт..."
     )
 
+    until_dt = datetime.now(timezone.utc)
+    since_dt = until_dt - timedelta(days=7)
+
+    prepare_transcripts_for_period(
+        since_dt,
+        until_dt,
+        chat_id=chat.id,
+    )
+
     export_path, message_count = export_last_days(
         7,
         chat_id=chat.id,
@@ -4030,6 +4313,12 @@ async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text(
         "Готовлю рабочий пакет за текущую смену для анализа в ChatGPT..."
+    )
+
+    prepare_transcripts_for_period(
+        since_dt,
+        until_dt,
+        chat_id=chat.id,
     )
 
     export_path, message_count = export_interval(
