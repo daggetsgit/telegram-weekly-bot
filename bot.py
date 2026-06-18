@@ -1465,7 +1465,9 @@ def load_contact_sheet_font(size: int):
         font_path = Path(CONTACT_SHEET_FONT_PATH)
         if font_path.exists():
             try:
-                return ImageFont.truetype(str(font_path), size)
+                font = ImageFont.truetype(str(font_path), size)
+                logging.info("Contact sheet font loaded: %s", font_path)
+                return font
             except Exception as e:
                 logging.warning("Could not load CONTACT_SHEET_FONT_PATH %s: %s", font_path, e)
         else:
@@ -1481,7 +1483,9 @@ def load_contact_sheet_font(size: int):
 
     for candidate in candidates:
         try:
-            return ImageFont.truetype(candidate, size)
+            font = ImageFont.truetype(candidate, size)
+            logging.info("Contact sheet font loaded: %s", candidate)
+            return font
         except Exception:
             pass
 
