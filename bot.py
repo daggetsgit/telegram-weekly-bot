@@ -2898,6 +2898,7 @@ def parse_ai_report_json(report_text: str):
         "risks_open_questions",
         "providers_partners",
         "next_steps",
+        "important_facts",
     }
     text = (report_text or "").strip()
     if not text:
@@ -3033,8 +3034,6 @@ def normalize_ai_report_data(report_data: dict) -> dict:
         if not isinstance(item, dict):
             continue
         name = compact_report_text(item.get("name"), 80)
-        if "bestservice" in normalize_report_dedupe_key(name):
-            continue
         role_status = compact_report_text(item.get("role_status"), 110)
         key_issue = compact_report_text(item.get("key_issue"), 160)
         if is_duplicate_report_item(f"{name} {role_status} {key_issue}", provider_seen):
@@ -3049,8 +3048,69 @@ def normalize_ai_report_data(report_data: dict) -> dict:
     normalized["providers_partners"] = providers
     normalized["risks_open_questions"] = compact_string_list(report_data.get("risks_open_questions"), 5, 180, seen)
     normalized["next_steps"] = compact_string_list(report_data.get("next_steps"), 5, 160, seen)
+    normalized["important_facts"] = normalize_important_facts(report_data.get("important_facts"))
+    apply_important_facts_safety_net(normalized)
 
     return normalized
+
+
+def normalize_important_facts(items):
+    facts = []
+    fact_seen = set()
+
+    for item in report_list(items):
+        if not isinstance(item, dict):
+            continue
+        fact = compact_report_text(item.get("fact"), 180)
+        source_type = compact_report_text(item.get("source_type"), 40)
+        action = compact_report_text(item.get("action"), 140)
+        if not fact:
+            continue
+        if is_duplicate_report_item(f"{fact} {action}", fact_seen):
+            continue
+        facts.append({
+            "fact": fact,
+            "source_type": source_type,
+            "action": action,
+        })
+        if len(facts) >= 6:
+            break
+
+    return facts
+
+
+def apply_important_facts_safety_net(report_data: dict):
+    content_seen = set()
+
+    for item in report_data.get("summary", []):
+        is_duplicate_report_item(item, content_seen)
+    for item in report_data.get("key_topics", []):
+        if isinstance(item, dict):
+            is_duplicate_report_item(f"{item.get('title', '')} {item.get('text', '')}", content_seen)
+    for item in report_data.get("decisions", []):
+        is_duplicate_report_item(item, content_seen)
+    for task in report_data.get("tasks", []):
+        if isinstance(task, dict):
+            is_duplicate_report_item(f"{task.get('task', '')} {task.get('context', '')}", content_seen)
+    for item in report_data.get("risks_open_questions", []):
+        is_duplicate_report_item(item, content_seen)
+    for item in report_data.get("next_steps", []):
+        is_duplicate_report_item(item, content_seen)
+
+    for item in report_data.get("important_facts", []):
+        fact = report_text_value(item.get("fact"))
+        action = report_text_value(item.get("action"))
+        fact_text = compact_report_text(f"{fact}. {action}" if action else fact, 220)
+        if is_duplicate_report_item(fact_text, content_seen):
+            continue
+
+        if len(report_data.get("key_topics", [])) < 4:
+            report_data.setdefault("key_topics", []).append({
+                "title": "Важный факт",
+                "text": fact_text,
+            })
+        elif len(report_data.get("risks_open_questions", [])) < 5:
+            report_data.setdefault("risks_open_questions", []).append(compact_report_text(fact_text, 180))
 
 
 def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text):
@@ -3072,32 +3132,25 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
     chat_export_text = limit_report_input_text("chat_export", chat_export_text, chat_budget)
     attachments_index_text = limit_report_input_text("attachments_index", attachments_index_text, attachments_budget)
 
-    system_prompt = """Ты готовишь краткий, но содержательный рабочий отчёт на русском языке для команды.
+    system_prompt = """Ты готовишь JSON-данные для краткого PDF-отчёта на русском языке.
 
-Цель PDF — компактный отчёт на 1–2 страницы. Не выкидывай важные решения, суммы, условия, риски и задачи ради чрезмерной краткости.
-Сохраняй практическую ценность: задачи, ответственные, открытые вопросы, риски, следующие шаги.
-Не делай длинный подробный отчёт, но и не превращай его в сухую выжимку.
-Не используй английские заголовки. Не показывай техническую “кухню” бота: local paths, cache, ZIP, contact sheets, служебные имена файлов, если это не нужно для решения.
-Учитывай важные данные из изображений и скриншотов по attachments_index, captions и контексту сообщений.
-Не выдумывай ответственных, сроки, факты, суммы, условия или содержание файлов.
-Если ответственный или срок не указаны, пиши “не указан / требуется назначить” или “не указан / требуется подтверждение”.
+Главный источник правил анализа — блок WORK_ANALYSIS_PROMPT в пользовательском сообщении.
+Ты должен строго следовать WORK_ANALYSIS_PROMPT и применить его к CHAT_EXPORT и ATTACHMENTS_INDEX.
+Не игнорируй правила из WORK_ANALYSIS_PROMPT про изображения/скриншоты, voice/audio transcripts, Zoom/AI-summary, провайдеров/партнёров, компактность и запрет технической “кухни”.
+Если есть конфликт между этой технической обвязкой и WORK_ANALYSIS_PROMPT, приоритет у WORK_ANALYSIS_PROMPT, кроме обязательного требования вернуть валидный JSON по OUTPUT_FORMAT.
 
-Не повторяй одну и ту же мысль в нескольких разделах.
-- “Краткий вывод” — только самое главное.
-- “Ключевые темы” — контекст и смысловые направления.
-- “Решения и статус” — только решения/договорённости, не повторяй темы.
-- “Задачи” — только action items.
-- “Риски и открытые вопросы” — только неопределённости/риски, не повторяй задачи.
-- “Следующие шаги” — короткий приоритетный список, не копируй таблицу задач.
+Не повторяй одну и ту же мысль в нескольких JSON-разделах:
+- summary — только самое главное;
+- key_topics — контекст и смысловые направления;
+- decisions — только решения/договорённости, не повторяй темы;
+- tasks — только action items;
+- risks_open_questions — только неопределённости/риски, не повторяй задачи;
+- next_steps — короткий приоритетный список, не копируй таблицу задач.
 
-Тексты с маркерами “[Цитата]”, “Тема / Что обсуждалось / Итог / Задачи” считай summary внутренней Zoom-встречи, если они отправлены участником чата.
-Используй такие summary как вспомогательный источник контекста и возможных задач, но не копируй дословно и не считай все пункты автоматически подтверждёнными решениями.
-Включай задачи из Zoom-summary только если они важны для следующего шага, не дублируют уже подтверждённые задачи или подтверждаются соседними сообщениями / последующим обсуждением.
-Если задача важна, но подтверждена только Zoom-summary, укажи в context: “по Zoom-summary, требуется подтверждение”.
+Верни только валидный JSON без Markdown и пояснений.
+"""
 
-В “Провайдеры и партнёры” не включай внутренние сервисы Best Service, например bestservice.chat. Их можно упомянуть в ключевых темах или следующих шагах, но не как provider/partner.
-
-Верни только валидный JSON без Markdown и пояснений. Структура:
+    output_format = """OUTPUT_FORMAT:
 {
   "summary": ["до 5 коротких пунктов, каждый до 180 символов"],
   "key_topics": [
@@ -3117,25 +3170,35 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
   "providers_partners": [
     {"name": "партнёр", "role_status": "роль / статус", "key_issue": "ключевой вопрос / следующий шаг, до 160 символов"}
   ],
-  "next_steps": ["до 5 практических следующих шагов, каждый до 160 символов"]
+  "next_steps": ["до 5 практических следующих шагов, каждый до 160 символов"],
+  "important_facts": [
+    {
+      "fact": "важный факт из изображения / скриншота / voice transcript / документа / чата, до 180 символов",
+      "source_type": "image / screenshot / voice / document / chat",
+      "action": "какой вывод, риск или следующий шаг связан с фактом, до 140 символов"
+    }
+  ]
 }
 
-Лимиты: key_topics до 4 тем, tasks до 7 задач, providers_partners до 4 строк. Если данных мало — не заполняй искусственно. Если данных много — выбери главное.
+Лимиты: key_topics до 4 тем, tasks до 7 задач, providers_partners до 4 строк, important_facts до 6 фактов.
+important_facts нужен как safety net, чтобы факты из изображений, скриншотов, voice transcripts и вложений не потерялись при сжатии.
+Если важный факт уже отражён в summary/key_topics/tasks/risks/next_steps, не дублируй его ради заполнения important_facts.
+Если данных мало — не заполняй искусственно. Если данных много — выбери главное.
 """
 
     user_input = f"""Чат: {chat_title}
 Период: {period_label}
 
-Ниже рабочий prompt/style guide. Следуй ему, но итоговый отчёт сделай компактным.
-
---- WORK ANALYSIS PROMPT ---
+WORK_ANALYSIS_PROMPT:
 {prompt_text}
 
---- CHAT EXPORT ---
+CHAT_EXPORT:
 {chat_export_text}
 
---- ATTACHMENTS INDEX ---
+ATTACHMENTS_INDEX:
 {attachments_index_text}
+
+{output_format}
 """
 
     client = OpenAI(
