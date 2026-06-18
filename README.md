@@ -283,7 +283,7 @@ OPENAI_REPORT_TEMPERATURE=0.2
 
 ## AI PDF Reports
 
-The bot can generate a compact one-page PDF report in Russian through the OpenAI API.
+The bot can generate a compact short PDF report in Russian through the OpenAI API.
 
 This feature is disabled by default. To enable it:
 
@@ -291,7 +291,9 @@ This feature is disabled by default. To enable it:
 OPENAI_REPORTS_ENABLED=true
 ```
 
-When enabled, the private admin `/report_chats` flow shows an extra `📄 Одностраничный PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, asks OpenAI for a compact report, renders it as PDF, and sends it to the admin in private chat.
+When enabled, the private admin `/report_chats` flow shows an extra `📄 Краткий PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, asks OpenAI for a compact 1–2 page report, renders it as PDF, and sends it to the admin in private chat.
+
+The AI PDF report is still an MVP. It aims to keep the report concise without dropping important decisions, amounts, risks, and action items. The tasks section is rendered as a real PDF table with owner, deadline, and status columns when the model returns structured data.
 
 The report uses the same custom prompt system as work packages. To update the private style guide/prompt on Railway, send a `.txt` file to the bot with caption `/set_work_prompt`, then check `/prompt_status`.
 

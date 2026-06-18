@@ -2795,7 +2795,7 @@ WORK_ANALYSIS_PROMPT_FALLBACK = """Ты — аналитик рабочей ко
 Используй chat_export.md, attachments_index.md, доступные вложения, скриншоты, видимое содержание изображений и transcripts voice/audio, если они есть.
 Не выдумывай отсутствующую информацию. Если что-то неясно, пиши “не указано / требуется подтверждение”.
 
-По умолчанию дай компактный отчёт на русском, пригодный для одностраничного PDF:
+По умолчанию дай компактный отчёт на русском, пригодный для краткого PDF на 1–2 страницы:
 1. Краткий вывод
 2. Ключевые темы
 3. Решения и статус
@@ -2889,7 +2889,42 @@ def extract_openai_response_text(response) -> str:
     return "\n".join(parts).strip()
 
 
-def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text) -> str:
+def parse_ai_report_json(report_text: str):
+    expected_keys = {
+        "summary",
+        "key_topics",
+        "decisions",
+        "tasks",
+        "risks_open_questions",
+        "providers_partners",
+        "next_steps",
+    }
+    text = (report_text or "").strip()
+    if not text:
+        return None
+
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    candidates = [text]
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        candidates.append(text[first_brace:last_brace + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict) and any(key in parsed for key in expected_keys):
+            return parsed
+
+    return None
+
+
+def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text):
     if not OPENAI_REPORTS_ENABLED:
         raise RuntimeError("AI PDF-отчёты отключены. Установите OPENAI_REPORTS_ENABLED=true.")
 
@@ -2908,23 +2943,40 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
     chat_export_text = limit_report_input_text("chat_export", chat_export_text, chat_budget)
     attachments_index_text = limit_report_input_text("attachments_index", attachments_index_text, attachments_budget)
 
-    system_prompt = """Ты готовишь компактный управленческий AI-отчёт на русском языке.
+    system_prompt = """Ты готовишь краткий, но содержательный рабочий отчёт на русском языке для команды.
 
-Цель — одностраничный PDF. Пиши кратко, но практично.
-Не используй английские заголовки. Не показывай техническую “кухню” бота: local paths, cache, ZIP, служебные имена файлов, если это не нужно для решения.
-Таблица задач обязательна, но короткая: только реальные action items.
+Цель PDF — компактный отчёт на 1–2 страницы. Не выкидывай важные решения, суммы, условия, риски и задачи ради чрезмерной краткости.
+Сохраняй практическую ценность: задачи, ответственные, открытые вопросы, риски, следующие шаги.
+Не делай длинный подробный отчёт, но и не превращай его в сухую выжимку.
+Не используй английские заголовки. Не показывай техническую “кухню” бота: local paths, cache, ZIP, contact sheets, служебные имена файлов, если это не нужно для решения.
 Учитывай важные данные из изображений и скриншотов по attachments_index, captions и контексту сообщений.
 Не выдумывай ответственных, сроки, факты, суммы, условия или содержание файлов.
-Если информации нет, пиши “не указано / требуется подтверждение”.
+Если ответственный или срок не указаны, пиши “не указан / требуется назначить” или “не указан / требуется подтверждение”.
 
-Строгая структура:
-1. Краткий вывод
-2. Ключевые темы
-3. Решения и статус
-4. Задачи
-5. Риски и открытые вопросы
-6. Провайдеры и партнёры, если применимо
-7. Следующие шаги
+Верни только валидный JSON без Markdown и пояснений. Структура:
+{
+  "summary": ["4–6 коротких пунктов, если данных достаточно"],
+  "key_topics": [
+    {"title": "тема", "text": "краткое содержание и важные факты"}
+  ],
+  "decisions": ["3–6 решений или текущих статусов, если они есть"],
+  "tasks": [
+    {
+      "task": "конкретное действие",
+      "owner": "ответственный или не указан / требуется назначить",
+      "deadline": "срок или не указан / требуется подтверждение",
+      "context": "короткий контекст, суммы, условия или источник решения",
+      "status": "статус"
+    }
+  ],
+  "risks_open_questions": ["4–7 рисков или открытых вопросов"],
+  "providers_partners": [
+    {"name": "партнёр", "role_status": "роль / статус", "key_issue": "ключевой вопрос / следующий шаг"}
+  ],
+  "next_steps": ["5–8 практических следующих шагов"]
+}
+
+Лимиты: key_topics 4–6 тем, tasks до 9 задач, providers_partners до 5 строк. Если данных мало — не заполняй искусственно. Если данных много — выбери главное.
 """
 
     user_input = f"""Чат: {chat_title}
@@ -2972,7 +3024,7 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
     if not report_text:
         raise RuntimeError("OpenAI returned empty report text.")
 
-    return report_text
+    return report_text, parse_ai_report_json(report_text)
 
 
 def get_report_pdf_font_name() -> str:
@@ -3063,7 +3115,181 @@ def add_markdownish_report_text(story, report_text: str, styles, font_name: str,
         index += 1
 
 
-def render_one_page_report_pdf(report_text, chat_title, period_label, output_path):
+def report_list(value, limit=None):
+    if not isinstance(value, list):
+        return []
+
+    items = [item for item in value if item]
+    if limit:
+        return items[:limit]
+    return items
+
+
+def report_text_value(value, default=""):
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
+
+
+def add_report_heading(story, title: str, styles):
+    from reportlab.platypus import Paragraph
+    from xml.sax.saxutils import escape
+
+    story.append(Paragraph(escape(title), styles["ReportHeading"]))
+
+
+def add_report_bullets(story, title: str, items, styles):
+    from reportlab.platypus import Paragraph
+    from xml.sax.saxutils import escape
+
+    items = report_list(items)
+    if not items:
+        return
+
+    add_report_heading(story, title, styles)
+    for item in items:
+        story.append(Paragraph("• " + escape(report_text_value(item)), styles["ReportBody"]))
+
+
+def add_key_topics(story, topics, styles):
+    from reportlab.platypus import Paragraph
+    from xml.sax.saxutils import escape
+
+    rows = report_list(topics, 6)
+    if not rows:
+        return
+
+    add_report_heading(story, "Ключевые темы", styles)
+    for topic in rows:
+        if isinstance(topic, dict):
+            title = report_text_value(topic.get("title"))
+            text = report_text_value(topic.get("text"))
+            if title and text:
+                story.append(Paragraph(f"<b>{escape(title)}.</b> {escape(text)}", styles["ReportBody"]))
+            elif title or text:
+                story.append(Paragraph("• " + escape(title or text), styles["ReportBody"]))
+        else:
+            story.append(Paragraph("• " + escape(report_text_value(topic)), styles["ReportBody"]))
+
+
+def add_tasks_table(story, tasks, styles, available_width: float):
+    from reportlab.platypus import Table, TableStyle, Paragraph
+    from reportlab.lib import colors
+    from xml.sax.saxutils import escape
+
+    rows = [task for task in report_list(tasks, 9) if isinstance(task, dict)]
+    if not rows:
+        return False
+
+    add_report_heading(story, "Задачи", styles)
+
+    table_rows = [[
+        Paragraph("<b>Задача</b>", styles["TableHeader"]),
+        Paragraph("<b>Ответственный</b>", styles["TableHeader"]),
+        Paragraph("<b>Срок</b>", styles["TableHeader"]),
+        Paragraph("<b>Статус</b>", styles["TableHeader"]),
+    ]]
+
+    for task in rows:
+        task_text = report_text_value(task.get("task"), "не указано")
+        context = report_text_value(task.get("context"))
+        task_cell = f"<b>{escape(task_text)}</b>"
+        if context:
+            task_cell += f"<br/><font size=\"6.6\">{escape(context)}</font>"
+
+        table_rows.append([
+            Paragraph(task_cell, styles["TableCell"]),
+            Paragraph(escape(report_text_value(task.get("owner"), "не указан / требуется назначить")), styles["TableCell"]),
+            Paragraph(escape(report_text_value(task.get("deadline"), "не указан / требуется подтверждение")), styles["TableCell"]),
+            Paragraph(escape(report_text_value(task.get("status"), "не указан")), styles["TableCell"]),
+        ])
+
+    table = Table(
+        table_rows,
+        colWidths=[
+            available_width * 0.46,
+            available_width * 0.18,
+            available_width * 0.16,
+            available_width * 0.20,
+        ],
+        repeatRows=1,
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e9eef7")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cfd6e0")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(table)
+    return True
+
+
+def add_providers_table(story, providers, styles, available_width: float):
+    from reportlab.platypus import Table, TableStyle, Paragraph
+    from reportlab.lib import colors
+    from xml.sax.saxutils import escape
+
+    rows = [item for item in report_list(providers, 5) if isinstance(item, dict)]
+    if not rows:
+        return False
+
+    add_report_heading(story, "Провайдеры и партнёры", styles)
+
+    table_rows = [[
+        Paragraph("<b>Партнёр</b>", styles["TableHeader"]),
+        Paragraph("<b>Роль / статус</b>", styles["TableHeader"]),
+        Paragraph("<b>Ключевой вопрос / следующий шаг</b>", styles["TableHeader"]),
+    ]]
+
+    for item in rows:
+        table_rows.append([
+            Paragraph(escape(report_text_value(item.get("name"), "не указано")), styles["TableCell"]),
+            Paragraph(escape(report_text_value(item.get("role_status"), "не указано")), styles["TableCell"]),
+            Paragraph(escape(report_text_value(item.get("key_issue"), "не указано")), styles["TableCell"]),
+        ])
+
+    table = Table(
+        table_rows,
+        colWidths=[
+            available_width * 0.25,
+            available_width * 0.32,
+            available_width * 0.43,
+        ],
+        repeatRows=1,
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e9eef7")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cfd6e0")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(table)
+    return True
+
+
+def add_structured_report_text(story, report_data: dict, styles, available_width: float):
+    add_report_bullets(story, "Краткий вывод", report_data.get("summary"), styles)
+    add_key_topics(story, report_data.get("key_topics"), styles)
+    add_report_bullets(story, "Решения и статус", report_data.get("decisions"), styles)
+
+    tasks_rendered = add_tasks_table(story, report_data.get("tasks"), styles, available_width)
+    if not tasks_rendered:
+        add_report_bullets(story, "Задачи", report_data.get("tasks"), styles)
+
+    add_report_bullets(story, "Риски и открытые вопросы", report_data.get("risks_open_questions"), styles)
+    add_providers_table(story, report_data.get("providers_partners"), styles, available_width)
+    add_report_bullets(story, "Следующие шаги", report_data.get("next_steps"), styles)
+
+
+def render_one_page_report_pdf(report_text, chat_title, period_label, output_path, report_data=None):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
@@ -3113,6 +3339,14 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         fontSize=7.2,
         leading=8.5,
     ))
+    styles.add(ParagraphStyle(
+        name="TableHeader",
+        parent=styles["BodyText"],
+        fontName=font_name,
+        fontSize=7.2,
+        leading=8.5,
+        textColor="#1f2937",
+    ))
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3128,7 +3362,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
     )
 
     story = [
-        Paragraph("Одностраничный отчёт", styles["ReportTitle"]),
+        Paragraph("Краткий рабочий отчёт", styles["ReportTitle"]),
         Paragraph(
             f"Чат: {escape(str(chat_title))}<br/>"
             f"Период: {escape(str(period_label))}<br/>"
@@ -3138,7 +3372,10 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         Spacer(1, 3),
     ]
 
-    add_markdownish_report_text(story, report_text, styles, font_name, doc.width)
+    if isinstance(report_data, dict):
+        add_structured_report_text(story, report_data, styles, doc.width)
+    else:
+        add_markdownish_report_text(story, report_text, styles, font_name, doc.width)
 
     def draw_footer(canvas, doc_obj):
         canvas.saveState()
@@ -3164,7 +3401,7 @@ def get_ai_report_interval(mode: str):
 def create_ai_pdf_output_path(chat_title: str, mode: str) -> Path:
     scope = safe_filename(chat_title)
     timestamp = datetime.now(APP_TIMEZONE).strftime("%Y%m%d-%H%M%S")
-    return EXPORT_DIR / f"ai_one_page_report_{scope}_{mode}_{timestamp}.pdf"
+    return EXPORT_DIR / f"ai_short_report_{scope}_{mode}_{timestamp}.pdf"
 
 
 async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE, target_chat_id: int, source_chat_id: int, source_chat_title: str, mode: str):
@@ -3186,7 +3423,7 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
 
     await context.bot.send_message(
         chat_id=target_chat_id,
-        text=f"Готовлю AI PDF-отчёт для чата: {source_chat_title}\nПериод: {period_label}",
+        text=f"Готовлю краткий AI PDF-отчёт для чата: {source_chat_title}\nПериод: {period_label}",
     )
 
     prepare_transcripts_for_period(
@@ -3216,7 +3453,7 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
     chat_export_text = export_path.read_text(encoding="utf-8")
     attachments_index_text = attachments_index_path.read_text(encoding="utf-8")
 
-    report_text = generate_ai_one_page_report(
+    report_text, report_data = generate_ai_one_page_report(
         source_chat_title,
         period_label,
         chat_export_text,
@@ -3225,13 +3462,19 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
     )
 
     pdf_path = create_ai_pdf_output_path(source_chat_title, mode)
-    render_one_page_report_pdf(report_text, source_chat_title, period_label, pdf_path)
+    render_one_page_report_pdf(report_text, source_chat_title, period_label, pdf_path, report_data=report_data)
+
+    if report_data is None:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="Структура AI-отчёта не распознана, PDF создан в fallback-режиме.",
+        )
 
     await send_document_safely_to_chat(
         context,
         target_chat_id,
         pdf_path,
-        caption=f"AI PDF-отчёт. {source_chat_title} — {period_label}",
+        caption=f"Краткий AI PDF-отчёт. {source_chat_title} — {period_label}",
     )
 
 
@@ -4478,8 +4721,8 @@ async def show_report_chats_selection(message, edit: bool = False):
         if OPENAI_REPORTS_ENABLED:
             keyboard.append(
                 [
-                    InlineKeyboardButton("📄 Одностраничный PDF — смена", callback_data=f"workpdf:shift:{chat_id}"),
-                    InlineKeyboardButton("📄 Одностраничный PDF — 7 дней", callback_data=f"workpdf:week:{chat_id}"),
+                    InlineKeyboardButton("📄 Краткий PDF — смена", callback_data=f"workpdf:shift:{chat_id}"),
+                    InlineKeyboardButton("📄 Краткий PDF — 7 дней", callback_data=f"workpdf:week:{chat_id}"),
                 ]
             )
 
