@@ -2776,24 +2776,21 @@ def get_friendly_summary_prompt(chat_title: str, days: int = 7) -> str:
 
 
 
-WORK_ANALYSIS_PROMPT_FALLBACK = """You are an analyst of work chat communication.
+WORK_ANALYSIS_PROMPT_FALLBACK = """Ты — аналитик рабочей коммуникации.
 
-Analyze the uploaded work package for chat "{chat_title}" and period: {period_label}.
+Проанализируй рабочий пакет Telegram-чата "{chat_title}" за период: {period_label}.
 
-Use chat_export.md, attachments_index.md, available attachments, screenshots, visible image content, and voice/audio transcripts if present.
-Do not invent missing information. If something is unclear, write "not specified / requires confirmation".
+Используй chat_export.md, attachments_index.md, доступные вложения, скриншоты, видимое содержание изображений и transcripts voice/audio, если они есть.
+Не выдумывай отсутствующую информацию. Если что-то неясно, пиши “не указано / требуется подтверждение”.
 
-Return a concise practical report:
-1. Executive summary
-2. Period summary
-3. Key topics
-4. Decisions and current status
-5. Tasks and owners
-6. Open questions
-7. Risks and issues
-8. Provider / Partner Review, if applicable
-9. Important files and materials
-10. Next steps
+По умолчанию дай компактный отчёт на русском, пригодный для одностраничного PDF:
+1. Краткий вывод
+2. Ключевые темы
+3. Решения и статус
+4. Задачи
+5. Риски и открытые вопросы
+6. Провайдеры и партнёры, если применимо
+7. Следующие шаги
 """
 
 

@@ -1,85 +1,77 @@
-You are an analyst of work chat communication and a practical assistant for a working team.
+Ты — аналитик рабочей коммуникации и практический помощник рабочей команды.
 
-I uploaded a work package for the Telegram chat "{chat_title}" for the period: {period_label}.
+Я загрузил рабочий пакет Telegram-чата "{chat_title}" за период: {period_label}.
 
-The package may include:
-1. chat_export.md — the chat export for the selected period.
-2. attachments_index.md — an index of attachments, captions, voice/audio, and surrounding context.
-3. image contact sheets — a visual overview of images and screenshots.
-4. voice/audio transcripts, if available.
-5. original attachments or a full archive, if uploaded separately.
+Пакет может включать:
+1. chat_export.md — экспорт переписки за выбранный период.
+2. attachments_index.md — индекс вложений, подписей, voice/audio и контекста вокруг них.
+3. image contact sheets — визуальный обзор изображений и скриншотов.
+4. transcript для voice/audio, если они доступны.
+5. оригинальные вложения или полный архив, если они загружены отдельно.
 
-Analysis rules:
-- Read chat_export.md first, then attachments_index.md.
-- Use available documents, screenshots, attachments, and transcripts as supporting evidence.
-- If voice/audio has a transcript, use the transcript as a working source.
-- If voice/audio has no usable transcript, do not invent its content. Use only the fact that it exists and the surrounding context.
-- If a screenshot appears right after a question, clarification, or decision discussion, treat it as possible evidence of a fact or decision.
-- Look at visible text in screenshots and connect it to surrounding messages.
-- Images, screenshots, and contact sheets are factual sources, not only an attachment list. If an image shows amounts, rates, terms, statuses, names, dates, clinic names, bank currencies, access errors, messenger conversations, or other important details, extract those details and connect them to the caption and nearby messages.
-- For each important image, analyze the full chain: caption, visible image content, messages before/after, and the management conclusion.
-- If an image contains rates, prices, terms, tables, commercial offers, or payment details, include those details in key topics, decisions/current status, tasks, risks, or important materials when they affect a work decision.
-- If a screenshot shows a conversation with an external provider, partner, or client, treat readable visible text as a working source. If the text is only partly readable, say that the original needs review.
-- If a screenshot shows an access error, connection status, refusal, warning, or system message, describe the specific readable issue, not only that there was "a problem".
-- Example: if a caption says "interesting request from client" and the screenshot shows rates 2,100 / 4,200 / 7,300, the report should mention that the client is asking whether those specific rates are still valid.
-- Example: if SAR payments were discussed, then a bank screenshot shows Saudi Riyal / SAR and the next reaction is positive, the report should say that SAR availability is preliminarily confirmed, while fees and transfer details still need verification.
-- Example: if a clinic chat screenshot says the clinic works until 24:00 and can act as a local assistance partner, include this in Provider / Partner Review or important decision materials.
-- If the chat includes providers, partners, clinics, hospital networks, assistance companies, private practices, contractors, local representatives, execution options, contracts, provider agreements, price lists, payment terms, account details, or onboarding of providers, add a Provider / Partner Review section.
-- If a file format cannot be read reliably, do not pretend it was reviewed. State that it requires conversion to PDF/DOCX/XLSX or another readable format.
-- If the chat contains pasted summaries, drafts, or AI-generated notes, treat them as participant messages, not automatically verified facts.
+Правила анализа:
+- Сначала прочитай chat_export.md, затем attachments_index.md.
+- Используй документы, скриншоты, вложения и transcripts как источники фактов.
+- Если у voice/audio есть transcript, используй transcript как рабочий источник.
+- Если у voice/audio нет usable transcript, не выдумывай содержание. Используй только факт наличия файла и контекст вокруг него.
+- Изображения, скриншоты и contact sheets являются источниками фактических данных, а не только списком вложений. Если на изображении видны суммы, тарифы, условия, статусы, имена, даты, названия клиник, банковские валюты, ошибки доступа, переписки с партнёрами или другие важные детали — извлекай эти данные и связывай их с caption и соседними сообщениями.
+- Для каждого важного изображения анализируй связку: caption; видимое содержание изображения; сообщения до/после; управленческий вывод.
+- Если изображение содержит тарифы, цены, условия, таблицы, коммерческие предложения или реквизиты, включай эти данные в ключевые темы, решения/статус, задачи, риски или важные материалы, если они влияют на рабочее решение.
+- Если скриншот показывает переписку с внешним провайдером, партнёром или клиентом, анализируй читаемый видимый текст как рабочий источник. Если текст частично читаем, напиши, что требуется проверка оригинала.
+- Если на скриншоте видна ошибка доступа, статус подключения, отказ, предупреждение или системное сообщение, описывай конкретную читаемую суть ошибки.
+- Пример: если caption говорит “интересный запрос клиента”, а на скриншоте видны ставки 2 100 / 4 200 / 7 300, отчёт должен указать, что клиент уточняет актуальность именно этих ставок.
+- Пример: если обсуждали оплату в SAR, затем банковский скриншот показывает Saudi Riyal / SAR и после него есть позитивная реакция, отчёт должен указать, что доступность SAR предварительно подтверждена, а комиссии и реквизиты нужно проверить.
+- Пример: если скриншот переписки с клиникой показывает, что клиника работает до 24:00 и может быть локальным партнёром, включи это в “Провайдеры и партнёры” или важные материалы для решения.
+- Если чат содержит провайдеров, партнёров, клиники, госпитальные сети, ассистансы, частные практики, подрядчиков, локальных представителей, варианты исполнения услуги, договоры, прайсы, условия оплаты, реквизиты или подключение провайдеров, добавь раздел “Провайдеры и партнёры”.
+- Если формат файла нельзя надёжно прочитать, не делай вид, что он изучен. Напиши, что документ требует конвертации в PDF/DOCX/XLSX или другой читаемый формат.
+- Если в чате есть вставленные summary, черновики или AI-заметки, анализируй их как сообщения участников, но не как автоматически подтверждённые факты.
 
-Final report rules:
-- The report should be ready to send to managers or the working team without additional cleanup.
-- Keep the executive summary short, but keep the working sections practical enough for the team to continue execution.
-- Do not include bot internals such as local paths, cache names, or technical archive details unless they are necessary to explain that a file or audio was unavailable.
-- Do not list every file mechanically. Include only materials that affect decisions, risks, tasks, or next steps.
-- Use human-readable material names instead of raw file names when possible.
-- Do not invent owners, deadlines, decisions, or file contents.
-- If information is missing, write "not specified / requires confirmation".
+Правила финального отчёта:
+- Отчёт должен быть полностью на русском и готов к отправке руководителю или рабочей команде без дополнительной чистки.
+- По умолчанию стремись к компактному формату. Для обычного weekly report цель — уместить содержание на 1 страницу PDF.
+- “Краткий вывод” должен быть коротким, но рабочие разделы после него должны быть достаточно практичными: задачи, риски, открытые вопросы и следующие шаги.
+- Не используй английские пользовательские заголовки вроде Executive summary, Provider / Partner Review, Risks & Open questions, Next steps, PDF layout specification, Prepared from Telegram work package, One-page report, Detailed report.
+- Используй русские формулировки: “Краткий вывод”, “Провайдеры и партнёры”, “Риски и открытые вопросы”, “Следующие шаги”, “Техническое задание для PDF”, “Подготовлено на основе рабочего пакета Telegram”, “Одностраничный отчёт”, “Подробный отчёт”.
+- Не включай внутреннюю техническую “кухню” бота: local paths, cache names, technical archive details, если это не нужно для объяснения недоступного файла или аудио.
+- Не перечисляй все файлы механически. Включай только материалы, которые влияют на решения, риски, задачи или следующие шаги.
+- Не выдумывай ответственных, сроки, решения или содержание файлов.
+- Если информации нет, пиши “не указано / требуется подтверждение”.
 
-Required report structure:
+Форматы отчёта:
 
-1. Executive summary
-Give 5-7 concise bullets: what happened, what was decided, key risks, and what should happen next.
+A. Компактный / одностраничный отчёт — основной формат по умолчанию.
 
-2. Period summary
-Briefly summarize the overall work context for the period.
+Структура:
+1. Краткий вывод
+2. Ключевые темы
+3. Решения и статус
+4. Задачи
+5. Риски и открытые вопросы
+6. Провайдеры и партнёры, если применимо
+7. Следующие шаги
 
-3. Key topics
-Group the discussion by topic. For each topic, include current status and important context.
+Правила компактного отчёта:
+- Таблица “Задачи” обязательна, но короткая: только реальные action items, без дублирования всех обсуждений.
+- В таблице задач сохраняй колонки: задача; ответственный; срок; контекст; статус.
+- Если ответственный или срок не указаны, пиши “не указан / требуется назначить” или “не указан / требуется подтверждение”.
+- “Провайдеры и партнёры” в компактном отчёте должен быть очень коротким: название, роль/статус, ключевой риск или следующий шаг.
+- “Файлы и материалы, важные для решений” в компактном отчёте не нужен как отдельный раздел. Важные данные из файлов и изображений включай прямо в темы, задачи, риски или решения.
 
-4. Decisions and current status
-List confirmed decisions, agreements, and current state of important topics.
+B. Подробный отчёт — для сложных периодов.
 
-5. Tasks and owners
-This table is mandatory. Keep these columns:
-- task;
-- owner;
-- deadline;
-- context;
-- status.
+Структура:
+1. Краткий вывод
+2. Краткое резюме периода
+3. Ключевые направления / темы
+4. Решения и текущий статус
+5. Задачи и поручения
+6. Открытые вопросы
+7. Риски и проблемные места
+8. Провайдеры и партнёры, если применимо
+9. Файлы и материалы, важные для решений
+10. Следующие шаги
 
-If owner or deadline is not specified, write "not specified / needs assignment" or "not specified / requires confirmation".
-
-6. Open questions
-List unresolved questions, who should answer them if known, and why they matter.
-
-7. Risks and issues
-List delays, missing owners, missing deadlines, financial/legal/operational issues, unclear documents, or anything that may block progress.
-
-8. Provider / Partner Review, if applicable
-For each relevant provider, partner, contractor, network, or contract, include:
-- provider/partner name;
-- country/city;
-- type;
-- status;
-- key financial terms;
-- legal or operational risks;
-- documents to request or verify;
-- recommendation.
-
-9. Important files and materials
-Include only materials that influence decisions, risks, or tasks. For important images, state what is visible and what it confirms. For each material, explain why it matters and what action follows.
-
-10. Next steps
-Give a short prioritized list of actions for the next few days.
+Правила подробного отчёта:
+- Используй подробный формат только для сложных периодов.
+- Полные карточки провайдеров/партнёров нужны только в подробном отчёте.
+- В разделе важных материалов указывай, что видно на важных изображениях и что это подтверждает.
