@@ -271,6 +271,32 @@ TRANSCRIBE_MAX_AUDIO_MB=25
 TRANSCRIBE_TIMEOUT_SECONDS=120
 ```
 
+AI PDF reports:
+
+```env
+OPENAI_REPORTS_ENABLED=false
+OPENAI_REPORT_MODEL=gpt-5-mini
+OPENAI_REPORT_TIMEOUT_SECONDS=180
+OPENAI_REPORT_MAX_INPUT_CHARS=250000
+OPENAI_REPORT_TEMPERATURE=0.2
+```
+
+## AI PDF Reports
+
+The bot can generate a compact one-page PDF report in Russian through the OpenAI API.
+
+This feature is disabled by default. To enable it:
+
+```env
+OPENAI_REPORTS_ENABLED=true
+```
+
+When enabled, the private admin `/report_chats` flow shows an extra `📄 Одностраничный PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, asks OpenAI for a compact report, renders it as PDF, and sends it to the admin in private chat.
+
+The report uses the same custom prompt system as work packages. To update the private style guide/prompt on Railway, send a `.txt` file to the bot with caption `/set_work_prompt`, then check `/prompt_status`.
+
+If the feature is disabled or `OPENAI_API_KEY` is missing, the bot shows a clear error and does not affect the existing work package flow.
+
 ## Custom Work Analysis Prompt
 
 The work package includes `work_analysis_prompt.txt`. Its template can be customized without editing `bot.py`.

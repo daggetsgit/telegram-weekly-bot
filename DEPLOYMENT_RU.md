@@ -148,6 +148,16 @@ TRANSCRIBE_MAX_AUDIO_MB=25
 TRANSCRIBE_TIMEOUT_SECONDS=120
 ```
 
+AI PDF-отчёты:
+
+```env
+OPENAI_REPORTS_ENABLED=false
+OPENAI_REPORT_MODEL=gpt-5-mini
+OPENAI_REPORT_TIMEOUT_SECONDS=180
+OPENAI_REPORT_MAX_INPUT_CHARS=250000
+OPENAI_REPORT_TEMPERATURE=0.2
+```
+
 После изменения variables Railway обычно делает redeploy.
 
 ## 7.1 Настроить prompt для рабочего анализа
@@ -195,7 +205,29 @@ Template поддерживает placeholders:
 
 Если приватного файла нет, бот использует `prompts/work_analysis_prompt.example.txt`. Если example тоже отсутствует, используется короткий встроенный generic prompt.
 
-## 7.2 OpenAI API для транскрибации голосовых
+## 7.2 AI PDF-отчёты через OpenAI API
+
+Бот может сам сформировать компактный одностраничный PDF-отчёт на русском языке через OpenAI API.
+
+Функция выключена по умолчанию:
+
+```env
+OPENAI_REPORTS_ENABLED=false
+```
+
+Чтобы включить:
+
+```env
+OPENAI_REPORTS_ENABLED=true
+```
+
+После включения в личном admin flow `/report_chats` появятся кнопки PDF для выбранного чата и периода. Бот берёт `chat_export.md`, `attachments_index.md` и текущий work analysis prompt, просит OpenAI подготовить компактный отчёт, рендерит PDF и отправляет его администратору в личку.
+
+Для настройки стиля отчёта используется тот же custom prompt. На Railway его можно обновить через Telegram: отправить `.txt` файл с caption `/set_work_prompt`, затем проверить `/prompt_status`.
+
+Если `OPENAI_API_KEY` отсутствует, OpenAI вернул ошибку или `OPENAI_REPORTS_ENABLED=false`, бот покажет понятную ошибку и не сломает обычную сборку рабочего пакета.
+
+## 7.3 OpenAI API для транскрибации голосовых
 
 ChatGPT Plus и OpenAI API — это разные продукты. Подписка ChatGPT Plus не даёт автоматически API-доступ и не оплачивает API-запросы.
 

@@ -37,6 +37,13 @@ def get_int_env(name: str, default: int) -> int:
         return default
 
 
+def get_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
 ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS", "")
 ADMIN_USER_ID_PARTS = [x.strip() for x in ADMIN_USER_IDS_RAW.split(",") if x.strip()]
 ADMIN_USER_IDS = (
@@ -66,6 +73,11 @@ TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 TRANSCRIBE_MAX_AUDIO_MB = int(os.getenv("TRANSCRIBE_MAX_AUDIO_MB", "25"))
 TRANSCRIBE_MAX_AUDIO_BYTES = TRANSCRIBE_MAX_AUDIO_MB * 1024 * 1024
 TRANSCRIBE_TIMEOUT_SECONDS = get_int_env("TRANSCRIBE_TIMEOUT_SECONDS", 120)
+OPENAI_REPORTS_ENABLED = os.getenv("OPENAI_REPORTS_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+OPENAI_REPORT_MODEL = os.getenv("OPENAI_REPORT_MODEL", "gpt-5-mini")
+OPENAI_REPORT_TIMEOUT_SECONDS = get_int_env("OPENAI_REPORT_TIMEOUT_SECONDS", 180)
+OPENAI_REPORT_MAX_INPUT_CHARS = get_int_env("OPENAI_REPORT_MAX_INPUT_CHARS", 250000)
+OPENAI_REPORT_TEMPERATURE = get_float_env("OPENAI_REPORT_TEMPERATURE", 0.2)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -2848,6 +2860,381 @@ def get_chatgpt_work_prompt(chat_title: str, days: int = 7, period_label: str = 
     return render_work_analysis_prompt_template(template, chat_title, period_text)
 
 
+def limit_report_input_text(label: str, text: str, max_chars: int) -> str:
+    text = text or ""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+
+    head_chars = max_chars * 2 // 3
+    tail_chars = max_chars - head_chars
+    return (
+        text[:head_chars]
+        + f"\n\n[... {label} truncated to fit OPENAI_REPORT_MAX_INPUT_CHARS ...]\n\n"
+        + text[-tail_chars:]
+    )
+
+
+def extract_openai_response_text(response) -> str:
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return output_text.strip()
+
+    parts = []
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            text = getattr(content, "text", None)
+            if text:
+                parts.append(text)
+
+    return "\n".join(parts).strip()
+
+
+def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text) -> str:
+    if not OPENAI_REPORTS_ENABLED:
+        raise RuntimeError("AI PDF-отчёты отключены. Установите OPENAI_REPORTS_ENABLED=true.")
+
+    if not OPENAI_API_KEY:
+        raise RuntimeError("Не задан OPENAI_API_KEY.")
+
+    from openai import OpenAI
+
+    max_chars = max(1000, OPENAI_REPORT_MAX_INPUT_CHARS)
+    prompt_budget = min(30000, max_chars // 5)
+    remaining_budget = max_chars - prompt_budget
+    chat_budget = remaining_budget * 2 // 3
+    attachments_budget = remaining_budget - chat_budget
+
+    prompt_text = limit_report_input_text("prompt", prompt_text, prompt_budget)
+    chat_export_text = limit_report_input_text("chat_export", chat_export_text, chat_budget)
+    attachments_index_text = limit_report_input_text("attachments_index", attachments_index_text, attachments_budget)
+
+    system_prompt = """Ты готовишь компактный управленческий AI-отчёт на русском языке.
+
+Цель — одностраничный PDF. Пиши кратко, но практично.
+Не используй английские заголовки. Не показывай техническую “кухню” бота: local paths, cache, ZIP, служебные имена файлов, если это не нужно для решения.
+Таблица задач обязательна, но короткая: только реальные action items.
+Учитывай важные данные из изображений и скриншотов по attachments_index, captions и контексту сообщений.
+Не выдумывай ответственных, сроки, факты, суммы, условия или содержание файлов.
+Если информации нет, пиши “не указано / требуется подтверждение”.
+
+Строгая структура:
+1. Краткий вывод
+2. Ключевые темы
+3. Решения и статус
+4. Задачи
+5. Риски и открытые вопросы
+6. Провайдеры и партнёры, если применимо
+7. Следующие шаги
+"""
+
+    user_input = f"""Чат: {chat_title}
+Период: {period_label}
+
+Ниже рабочий prompt/style guide. Следуй ему, но итоговый отчёт сделай компактным.
+
+--- WORK ANALYSIS PROMPT ---
+{prompt_text}
+
+--- CHAT EXPORT ---
+{chat_export_text}
+
+--- ATTACHMENTS INDEX ---
+{attachments_index_text}
+"""
+
+    client = OpenAI(
+        api_key=OPENAI_API_KEY,
+        timeout=OPENAI_REPORT_TIMEOUT_SECONDS,
+    )
+
+    response_input = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_input},
+    ]
+
+    try:
+        response = client.responses.create(
+            model=OPENAI_REPORT_MODEL,
+            temperature=OPENAI_REPORT_TEMPERATURE,
+            input=response_input,
+        )
+    except Exception as e:
+        error_text = str(e).lower()
+        if "temperature" not in error_text and "unsupported" not in error_text:
+            raise
+        logging.warning("OpenAI report model rejected temperature; retrying without temperature.")
+        response = client.responses.create(
+            model=OPENAI_REPORT_MODEL,
+            input=response_input,
+        )
+
+    report_text = extract_openai_response_text(response)
+    if not report_text:
+        raise RuntimeError("OpenAI returned empty report text.")
+
+    return report_text
+
+
+def get_report_pdf_font_name() -> str:
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except Exception:
+        return "Helvetica"
+
+    candidates = []
+    if CONTACT_SHEET_FONT_PATH:
+        candidates.append(CONTACT_SHEET_FONT_PATH)
+    candidates.extend([
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ])
+
+    for candidate in candidates:
+        path = Path(candidate)
+        if not path.exists():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont("ReportSans", str(path)))
+            return "ReportSans"
+        except Exception as e:
+            logging.warning("Could not load PDF font %s: %s", path, e)
+
+    logging.warning("Could not find Unicode TTF font for PDF report. Falling back to Helvetica.")
+    return "Helvetica"
+
+
+def report_line_to_flowable(line: str, styles, font_name: str):
+    from reportlab.platypus import Paragraph, Spacer
+    from xml.sax.saxutils import escape
+
+    stripped = line.strip()
+    if not stripped:
+        return Spacer(1, 4)
+
+    heading_numbers = tuple(f"{number}. " for number in range(1, 11))
+    if stripped.startswith(heading_numbers):
+        return Paragraph(f"<b>{escape(stripped)}</b>", styles["ReportHeading"])
+
+    if stripped.startswith(("- ", "* ", "• ")):
+        return Paragraph("• " + escape(stripped[2:].strip()), styles["ReportBody"])
+
+    return Paragraph(escape(stripped), styles["ReportBody"])
+
+
+def add_markdownish_report_text(story, report_text: str, styles, font_name: str, available_width: float):
+    from reportlab.platypus import Table, TableStyle, Paragraph
+    from reportlab.lib import colors
+    from xml.sax.saxutils import escape
+
+    lines = report_text.splitlines()
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+
+        if "|" in line and index + 1 < len(lines) and set(lines[index + 1].replace("|", "").strip()) <= {"-", ":"}:
+            headers = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            table_rows = [[Paragraph(f"<b>{escape(cell)}</b>", styles["TableCell"]) for cell in headers]]
+            index += 2
+
+            while index < len(lines) and "|" in lines[index]:
+                cells = [cell.strip() for cell in lines[index].strip().strip("|").split("|")]
+                table_rows.append([Paragraph(escape(cell), styles["TableCell"]) for cell in cells])
+                index += 1
+
+            column_count = max(1, len(table_rows[0]))
+            table = Table(table_rows, colWidths=[available_width / column_count] * column_count, repeatRows=1)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cccccc")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(table)
+            continue
+
+        story.append(report_line_to_flowable(line, styles, font_name))
+        index += 1
+
+
+def render_one_page_report_pdf(report_text, chat_title, period_label, output_path):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from xml.sax.saxutils import escape
+
+    font_name = get_report_pdf_font_name()
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="ReportTitle",
+        parent=styles["Title"],
+        fontName=font_name,
+        fontSize=15,
+        leading=18,
+        spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="ReportMeta",
+        parent=styles["Normal"],
+        fontName=font_name,
+        fontSize=8,
+        leading=10,
+        textColor="#555555",
+        spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="ReportHeading",
+        parent=styles["Heading2"],
+        fontName=font_name,
+        fontSize=10,
+        leading=12,
+        spaceBefore=5,
+        spaceAfter=2,
+    ))
+    styles.add(ParagraphStyle(
+        name="ReportBody",
+        parent=styles["BodyText"],
+        fontName=font_name,
+        fontSize=8.2,
+        leading=10.2,
+        spaceAfter=2,
+    ))
+    styles.add(ParagraphStyle(
+        name="TableCell",
+        parent=styles["BodyText"],
+        fontName=font_name,
+        fontSize=7.2,
+        leading=8.5,
+    ))
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    doc = SimpleDocTemplate(
+        str(output_path),
+        pagesize=A4,
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=10 * mm,
+        bottomMargin=12 * mm,
+        title=f"AI PDF report — {chat_title}",
+    )
+
+    story = [
+        Paragraph("Одностраничный отчёт", styles["ReportTitle"]),
+        Paragraph(
+            f"Чат: {escape(str(chat_title))}<br/>"
+            f"Период: {escape(str(period_label))}<br/>"
+            f"Дата подготовки: {datetime.now(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M')}",
+            styles["ReportMeta"],
+        ),
+        Spacer(1, 3),
+    ]
+
+    add_markdownish_report_text(story, report_text, styles, font_name, doc.width)
+
+    def draw_footer(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setFont(font_name, 7)
+        footer = "Подготовлено на основе рабочего пакета Telegram"
+        canvas.drawString(doc_obj.leftMargin, 7 * mm, footer)
+        canvas.drawRightString(A4[0] - doc_obj.rightMargin, 7 * mm, f"Стр. {doc_obj.page}")
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
+    return output_path
+
+
+def get_ai_report_interval(mode: str):
+    if mode == "shift":
+        return get_current_work_shift_interval()
+
+    until_dt = datetime.now(timezone.utc)
+    since_dt = until_dt - timedelta(days=7)
+    return since_dt, until_dt, "последние 7 дней"
+
+
+def create_ai_pdf_output_path(chat_title: str, mode: str) -> Path:
+    scope = safe_filename(chat_title)
+    timestamp = datetime.now(APP_TIMEZONE).strftime("%Y%m%d-%H%M%S")
+    return EXPORT_DIR / f"ai_one_page_report_{scope}_{mode}_{timestamp}.pdf"
+
+
+async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE, target_chat_id: int, source_chat_id: int, source_chat_title: str, mode: str):
+    if not OPENAI_REPORTS_ENABLED:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="AI PDF-отчёты отключены. Установите OPENAI_REPORTS_ENABLED=true.",
+        )
+        return
+
+    if not OPENAI_API_KEY:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="AI PDF-отчёт недоступен: не задан OPENAI_API_KEY.",
+        )
+        return
+
+    since_dt, until_dt, period_label = get_ai_report_interval(mode)
+
+    await context.bot.send_message(
+        chat_id=target_chat_id,
+        text=f"Готовлю AI PDF-отчёт для чата: {source_chat_title}\nПериод: {period_label}",
+    )
+
+    prepare_transcripts_for_period(
+        since_dt,
+        until_dt,
+        chat_id=source_chat_id,
+    )
+
+    export_path, _message_count = export_interval(
+        since_dt,
+        until_dt,
+        chat_id=source_chat_id,
+        chat_title_for_filename=source_chat_title,
+        period_label=period_label,
+    )
+
+    attachments_index_path, _attachment_count = create_attachments_index(
+        1,
+        chat_id=source_chat_id,
+        chat_title_for_filename=source_chat_title,
+        since_dt=since_dt,
+        until_dt=until_dt,
+        period_label=period_label,
+    )
+
+    prompt_text = get_chatgpt_work_prompt(source_chat_title, 1, period_label)
+    chat_export_text = export_path.read_text(encoding="utf-8")
+    attachments_index_text = attachments_index_path.read_text(encoding="utf-8")
+
+    report_text = generate_ai_one_page_report(
+        source_chat_title,
+        period_label,
+        chat_export_text,
+        attachments_index_text,
+        prompt_text,
+    )
+
+    pdf_path = create_ai_pdf_output_path(source_chat_title, mode)
+    render_one_page_report_pdf(report_text, source_chat_title, period_label, pdf_path)
+
+    await send_document_safely_to_chat(
+        context,
+        target_chat_id,
+        pdf_path,
+        caption=f"AI PDF-отчёт. {source_chat_title} — {period_label}",
+    )
+
+
 
 async def legacy_command_notice(update: Update, command_name: str):
     await update.message.reply_text(
@@ -4088,6 +4475,13 @@ async def show_report_chats_selection(message, edit: bool = False):
                 InlineKeyboardButton("7 дней", callback_data=f"workpkg:week:{chat_id}"),
             ]
         )
+        if OPENAI_REPORTS_ENABLED:
+            keyboard.append(
+                [
+                    InlineKeyboardButton("📄 Одностраничный PDF — смена", callback_data=f"workpdf:shift:{chat_id}"),
+                    InlineKeyboardButton("📄 Одностраничный PDF — 7 дней", callback_data=f"workpdf:week:{chat_id}"),
+                ]
+            )
 
     await send_or_edit_admin_text(
         message,
@@ -4314,7 +4708,8 @@ async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if not data.startswith("workpkg:"):
-        return
+        if not data.startswith("workpdf:"):
+            return
 
     await query.answer()
 
@@ -4334,16 +4729,28 @@ async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     try:
-        await send_work_package_for_source_chat(
-            context,
-            query.message.chat_id,
-            source_chat_id,
-            source_chat_title,
-            mode,
-        )
+        if data.startswith("workpdf:"):
+            if query.message.chat.type != "private":
+                await query.answer("AI PDF-отчёты доступны только в личном чате с ботом.", show_alert=True)
+                return
+            await send_ai_pdf_report_for_source_chat(
+                context,
+                query.message.chat_id,
+                source_chat_id,
+                source_chat_title,
+                mode,
+            )
+        else:
+            await send_work_package_for_source_chat(
+                context,
+                query.message.chat_id,
+                source_chat_id,
+                source_chat_title,
+                mode,
+            )
     except Exception as e:
-        logging.exception("Could not create work package from inline button")
-        await query.message.reply_text(f"Не удалось собрать рабочий пакет.\n\nОшибка: {e}")
+        logging.exception("Could not create work package or AI PDF from inline button")
+        await query.message.reply_text(f"Не удалось выполнить действие.\n\nОшибка: {e}")
 
 
 async def cleanup_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4736,7 +5143,7 @@ def main():
     app.add_handler(CommandHandler("friendly_prompt", friendly_prompt))
     app.add_handler(CommandHandler("friendly_package", friendly_package))
     app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin:"))
-    app.add_handler(CallbackQueryHandler(work_package_callback, pattern=r"^(workpkg|noop):"))
+    app.add_handler(CallbackQueryHandler(work_package_callback, pattern=r"^(workpkg|workpdf|noop):"))
     app.add_handler(CallbackQueryHandler(chat_approval_callback, pattern="^(approve_chat|reject_chat):"))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
