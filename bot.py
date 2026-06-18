@@ -2924,6 +2924,135 @@ def parse_ai_report_json(report_text: str):
     return None
 
 
+def compact_report_text(value, max_chars: int, default: str = "") -> str:
+    text = report_text_value(value, default)
+    text = re.sub(r"\s+", " ", text).strip()
+    if max_chars and len(text) > max_chars:
+        return text[:max(0, max_chars - 1)].rstrip(" ,.;:") + "…"
+    return text
+
+
+def normalize_report_dedupe_key(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").lower())
+    text = re.sub(r"[^\wа-яё0-9]+", " ", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def is_duplicate_report_item(text: str, seen_keys: set) -> bool:
+    key = normalize_report_dedupe_key(text)
+    if not key:
+        return True
+
+    prefix = key[:90]
+    if key in seen_keys or prefix in seen_keys:
+        return True
+
+    for existing in seen_keys:
+        if len(existing) >= 45 and len(prefix) >= 45:
+            if existing.startswith(prefix[:45]) or prefix.startswith(existing[:45]):
+                return True
+
+    seen_keys.add(key)
+    seen_keys.add(prefix)
+    return False
+
+
+def compact_string_list(items, limit: int, max_chars: int, seen_keys: set):
+    compacted = []
+    for item in report_list(items):
+        text = compact_report_text(item, max_chars)
+        if is_duplicate_report_item(text, seen_keys):
+            continue
+        compacted.append(text)
+        if len(compacted) >= limit:
+            break
+    return compacted
+
+
+def compact_pdf_short_value(value: str) -> str:
+    text = report_text_value(value)
+    lowered = text.lower()
+    if "требуется назначить" in lowered:
+        return "назначить"
+    if "требуется подтверждение" in lowered:
+        return "уточнить"
+    if "не указан" in lowered:
+        return "не указан"
+    return compact_report_text(text, 70)
+
+
+def normalize_ai_report_data(report_data: dict) -> dict:
+    seen = set()
+    normalized = {
+        "summary": compact_string_list(report_data.get("summary"), 5, 180, seen),
+    }
+
+    topics = []
+    for topic in report_list(report_data.get("key_topics")):
+        if isinstance(topic, dict):
+            title = compact_report_text(topic.get("title"), 80)
+            text = compact_report_text(topic.get("text"), 220)
+            dedupe_text = f"{title} {text}"
+        else:
+            title = ""
+            text = compact_report_text(topic, 220)
+            dedupe_text = text
+        if is_duplicate_report_item(dedupe_text, seen):
+            continue
+        topics.append({"title": title, "text": text})
+        if len(topics) >= 4:
+            break
+    normalized["key_topics"] = topics
+    normalized["decisions"] = compact_string_list(report_data.get("decisions"), 4, 180, seen)
+
+    task_seen = set()
+    tasks = []
+    for task in report_list(report_data.get("tasks")):
+        if not isinstance(task, dict):
+            continue
+        task_text = compact_report_text(task.get("task"), 160)
+        if is_duplicate_report_item(task_text, task_seen):
+            continue
+        context = compact_report_text(task.get("context"), 120)
+        if normalize_report_dedupe_key(context) == normalize_report_dedupe_key(task_text):
+            context = ""
+        tasks.append({
+            "task": task_text,
+            "owner": compact_report_text(task.get("owner"), 70, "не указан / требуется назначить"),
+            "deadline": compact_report_text(task.get("deadline"), 70, "не указан / требуется подтверждение"),
+            "context": context,
+            "status": compact_report_text(task.get("status"), 70, "не указан"),
+        })
+        if len(tasks) >= 7:
+            break
+    normalized["tasks"] = tasks
+
+    providers = []
+    provider_seen = set()
+    for item in report_list(report_data.get("providers_partners")):
+        if not isinstance(item, dict):
+            continue
+        name = compact_report_text(item.get("name"), 80)
+        if "bestservice" in normalize_report_dedupe_key(name):
+            continue
+        role_status = compact_report_text(item.get("role_status"), 110)
+        key_issue = compact_report_text(item.get("key_issue"), 160)
+        if is_duplicate_report_item(f"{name} {role_status} {key_issue}", provider_seen):
+            continue
+        providers.append({
+            "name": name,
+            "role_status": role_status,
+            "key_issue": key_issue,
+        })
+        if len(providers) >= 4:
+            break
+    normalized["providers_partners"] = providers
+    normalized["risks_open_questions"] = compact_string_list(report_data.get("risks_open_questions"), 5, 180, seen)
+    normalized["next_steps"] = compact_string_list(report_data.get("next_steps"), 5, 160, seen)
+
+    return normalized
+
+
 def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text):
     if not OPENAI_REPORTS_ENABLED:
         raise RuntimeError("AI PDF-отчёты отключены. Установите OPENAI_REPORTS_ENABLED=true.")
@@ -2953,30 +3082,45 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
 Не выдумывай ответственных, сроки, факты, суммы, условия или содержание файлов.
 Если ответственный или срок не указаны, пиши “не указан / требуется назначить” или “не указан / требуется подтверждение”.
 
+Не повторяй одну и ту же мысль в нескольких разделах.
+- “Краткий вывод” — только самое главное.
+- “Ключевые темы” — контекст и смысловые направления.
+- “Решения и статус” — только решения/договорённости, не повторяй темы.
+- “Задачи” — только action items.
+- “Риски и открытые вопросы” — только неопределённости/риски, не повторяй задачи.
+- “Следующие шаги” — короткий приоритетный список, не копируй таблицу задач.
+
+Тексты с маркерами “[Цитата]”, “Тема / Что обсуждалось / Итог / Задачи” считай summary внутренней Zoom-встречи, если они отправлены участником чата.
+Используй такие summary как вспомогательный источник контекста и возможных задач, но не копируй дословно и не считай все пункты автоматически подтверждёнными решениями.
+Включай задачи из Zoom-summary только если они важны для следующего шага, не дублируют уже подтверждённые задачи или подтверждаются соседними сообщениями / последующим обсуждением.
+Если задача важна, но подтверждена только Zoom-summary, укажи в context: “по Zoom-summary, требуется подтверждение”.
+
+В “Провайдеры и партнёры” не включай внутренние сервисы Best Service, например bestservice.chat. Их можно упомянуть в ключевых темах или следующих шагах, но не как provider/partner.
+
 Верни только валидный JSON без Markdown и пояснений. Структура:
 {
-  "summary": ["4–6 коротких пунктов, если данных достаточно"],
+  "summary": ["до 5 коротких пунктов, каждый до 180 символов"],
   "key_topics": [
-    {"title": "тема", "text": "краткое содержание и важные факты"}
+    {"title": "тема", "text": "краткое содержание и важные факты, до 220 символов"}
   ],
-  "decisions": ["3–6 решений или текущих статусов, если они есть"],
+  "decisions": ["до 4 решений или текущих статусов, каждый до 180 символов"],
   "tasks": [
     {
-      "task": "конкретное действие",
+      "task": "конкретное действие, до 160 символов",
       "owner": "ответственный или не указан / требуется назначить",
       "deadline": "срок или не указан / требуется подтверждение",
-      "context": "короткий контекст, суммы, условия или источник решения",
+      "context": "короткий контекст, суммы, условия или источник решения, до 120 символов",
       "status": "статус"
     }
   ],
-  "risks_open_questions": ["4–7 рисков или открытых вопросов"],
+  "risks_open_questions": ["до 5 рисков или открытых вопросов, каждый до 180 символов"],
   "providers_partners": [
-    {"name": "партнёр", "role_status": "роль / статус", "key_issue": "ключевой вопрос / следующий шаг"}
+    {"name": "партнёр", "role_status": "роль / статус", "key_issue": "ключевой вопрос / следующий шаг, до 160 символов"}
   ],
-  "next_steps": ["5–8 практических следующих шагов"]
+  "next_steps": ["до 5 практических следующих шагов, каждый до 160 символов"]
 }
 
-Лимиты: key_topics 4–6 тем, tasks до 9 задач, providers_partners до 5 строк. Если данных мало — не заполняй искусственно. Если данных много — выбери главное.
+Лимиты: key_topics до 4 тем, tasks до 7 задач, providers_partners до 4 строк. Если данных мало — не заполняй искусственно. Если данных много — выбери главное.
 """
 
     user_input = f"""Чат: {chat_title}
@@ -3024,7 +3168,11 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
     if not report_text:
         raise RuntimeError("OpenAI returned empty report text.")
 
-    return report_text, parse_ai_report_json(report_text)
+    report_data = parse_ai_report_json(report_text)
+    if report_data is not None:
+        report_data = normalize_ai_report_data(report_data)
+
+    return report_text, report_data
 
 
 def get_report_pdf_font_name() -> str:
@@ -3156,7 +3304,7 @@ def add_key_topics(story, topics, styles):
     from reportlab.platypus import Paragraph
     from xml.sax.saxutils import escape
 
-    rows = report_list(topics, 6)
+    rows = report_list(topics, 4)
     if not rows:
         return
 
@@ -3178,7 +3326,7 @@ def add_tasks_table(story, tasks, styles, available_width: float):
     from reportlab.lib import colors
     from xml.sax.saxutils import escape
 
-    rows = [task for task in report_list(tasks, 9) if isinstance(task, dict)]
+    rows = [task for task in report_list(tasks, 7) if isinstance(task, dict)]
     if not rows:
         return False
 
@@ -3192,17 +3340,19 @@ def add_tasks_table(story, tasks, styles, available_width: float):
     ]]
 
     for task in rows:
-        task_text = report_text_value(task.get("task"), "не указано")
-        context = report_text_value(task.get("context"))
+        task_text = compact_report_text(task.get("task"), 160, "не указано")
+        context = compact_report_text(task.get("context"), 120)
+        if normalize_report_dedupe_key(context) == normalize_report_dedupe_key(task_text):
+            context = ""
         task_cell = f"<b>{escape(task_text)}</b>"
         if context:
             task_cell += f"<br/><font size=\"6.6\">{escape(context)}</font>"
 
         table_rows.append([
             Paragraph(task_cell, styles["TableCell"]),
-            Paragraph(escape(report_text_value(task.get("owner"), "не указан / требуется назначить")), styles["TableCell"]),
-            Paragraph(escape(report_text_value(task.get("deadline"), "не указан / требуется подтверждение")), styles["TableCell"]),
-            Paragraph(escape(report_text_value(task.get("status"), "не указан")), styles["TableCell"]),
+            Paragraph(escape(compact_pdf_short_value(task.get("owner")) or "не указан"), styles["TableCell"]),
+            Paragraph(escape(compact_pdf_short_value(task.get("deadline")) or "уточнить"), styles["TableCell"]),
+            Paragraph(escape(compact_pdf_short_value(task.get("status")) or "не указан"), styles["TableCell"]),
         ])
 
     table = Table(
@@ -3220,10 +3370,10 @@ def add_tasks_table(story, tasks, styles, available_width: float):
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cfd6e0")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     story.append(table)
     return True
@@ -3234,7 +3384,7 @@ def add_providers_table(story, providers, styles, available_width: float):
     from reportlab.lib import colors
     from xml.sax.saxutils import escape
 
-    rows = [item for item in report_list(providers, 5) if isinstance(item, dict)]
+    rows = [item for item in report_list(providers, 4) if isinstance(item, dict)]
     if not rows:
         return False
 
@@ -3248,9 +3398,9 @@ def add_providers_table(story, providers, styles, available_width: float):
 
     for item in rows:
         table_rows.append([
-            Paragraph(escape(report_text_value(item.get("name"), "не указано")), styles["TableCell"]),
-            Paragraph(escape(report_text_value(item.get("role_status"), "не указано")), styles["TableCell"]),
-            Paragraph(escape(report_text_value(item.get("key_issue"), "не указано")), styles["TableCell"]),
+            Paragraph(escape(compact_report_text(item.get("name"), 80, "не указано")), styles["TableCell"]),
+            Paragraph(escape(compact_report_text(item.get("role_status"), 110, "не указано")), styles["TableCell"]),
+            Paragraph(escape(compact_report_text(item.get("key_issue"), 160, "не указано")), styles["TableCell"]),
         ])
 
     table = Table(
@@ -3266,10 +3416,10 @@ def add_providers_table(story, providers, styles, available_width: float):
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e9eef7")),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cfd6e0")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     story.append(table)
     return True
@@ -3302,49 +3452,49 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         name="ReportTitle",
         parent=styles["Title"],
         fontName=font_name,
-        fontSize=15,
-        leading=18,
-        spaceAfter=5,
+        fontSize=14,
+        leading=16,
+        spaceAfter=3,
     ))
     styles.add(ParagraphStyle(
         name="ReportMeta",
         parent=styles["Normal"],
         fontName=font_name,
         fontSize=8,
-        leading=10,
+        leading=9.5,
         textColor="#555555",
-        spaceAfter=5,
+        spaceAfter=3,
     ))
     styles.add(ParagraphStyle(
         name="ReportHeading",
         parent=styles["Heading2"],
         fontName=font_name,
-        fontSize=10,
-        leading=12,
-        spaceBefore=5,
-        spaceAfter=2,
+        fontSize=9.2,
+        leading=10.5,
+        spaceBefore=3,
+        spaceAfter=1,
     ))
     styles.add(ParagraphStyle(
         name="ReportBody",
         parent=styles["BodyText"],
         fontName=font_name,
-        fontSize=8.2,
-        leading=10.2,
-        spaceAfter=2,
+        fontSize=8,
+        leading=9.2,
+        spaceAfter=1,
     ))
     styles.add(ParagraphStyle(
         name="TableCell",
         parent=styles["BodyText"],
         fontName=font_name,
-        fontSize=7.2,
-        leading=8.5,
+        fontSize=7.5,
+        leading=8.4,
     ))
     styles.add(ParagraphStyle(
         name="TableHeader",
         parent=styles["BodyText"],
         fontName=font_name,
-        fontSize=7.2,
-        leading=8.5,
+        fontSize=7.5,
+        leading=8.4,
         textColor="#1f2937",
     ))
 
@@ -3356,8 +3506,8 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         pagesize=A4,
         leftMargin=12 * mm,
         rightMargin=12 * mm,
-        topMargin=10 * mm,
-        bottomMargin=12 * mm,
+        topMargin=9 * mm,
+        bottomMargin=11 * mm,
         title=f"AI PDF report — {chat_title}",
     )
 
@@ -3369,7 +3519,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
             f"Дата подготовки: {datetime.now(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M')}",
             styles["ReportMeta"],
         ),
-        Spacer(1, 3),
+        Spacer(1, 2),
     ]
 
     if isinstance(report_data, dict):
