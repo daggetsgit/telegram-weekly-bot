@@ -131,6 +131,12 @@ CONTACT_SHEET_THUMB_WIDTH=1350
 CONTACT_SHEET_JPEG_QUALITY=92
 ```
 
+Railway/Railpack package для корректной кириллицы в image contact sheets:
+
+```env
+RAILPACK_DEPLOY_APT_PACKAGES=fonts-dejavu-core
+```
+
 OpenAI voice/audio transcription:
 
 ```env
