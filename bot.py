@@ -2780,7 +2780,7 @@ WORK_ANALYSIS_PROMPT_FALLBACK = """You are an analyst of work chat communication
 
 Analyze the uploaded work package for chat "{chat_title}" and period: {period_label}.
 
-Use chat_export.md, attachments_index.md, available attachments, screenshots, and voice/audio transcripts if present.
+Use chat_export.md, attachments_index.md, available attachments, screenshots, visible image content, and voice/audio transcripts if present.
 Do not invent missing information. If something is unclear, write "not specified / requires confirmation".
 
 Return a concise practical report:
@@ -2791,7 +2791,7 @@ Return a concise practical report:
 5. Tasks and owners
 6. Open questions
 7. Risks and issues
-8. Contract / Provider Review, if applicable
+8. Provider / Partner Review, if applicable
 9. Important files and materials
 10. Next steps
 """
