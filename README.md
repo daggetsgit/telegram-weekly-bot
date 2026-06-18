@@ -281,6 +281,7 @@ OPENAI_REPORT_MAX_INPUT_CHARS=250000
 OPENAI_REPORT_TEMPERATURE=0.2
 OPENAI_REPORT_INCLUDE_IMAGES=true
 OPENAI_REPORT_MAX_IMAGES=6
+AI_REPORT_LOGO_PATH=assets/bs_logo.png
 ```
 
 ## AI PDF Reports
@@ -298,6 +299,8 @@ When enabled, the private admin `/report_chats` flow shows an extra `📄 Кра
 The AI PDF report is still an MVP. It aims to keep the report concise without dropping important decisions, amounts, risks, and action items. The tasks section is rendered as a real PDF table with owner, deadline, and status columns when the model returns structured data.
 
 Image contact sheets help the model read visible text in screenshots, such as prices, currencies, access errors, and partner messages. `OPENAI_REPORT_MAX_IMAGES` limits how many contact sheet pages are sent. Including images may slightly increase OpenAI API cost.
+
+`AI_REPORT_LOGO_PATH` can point to a PNG/JPEG logo used in the PDF header. If the file is missing or unreadable, the PDF is generated without a logo. The repository keeps the source SVG at `assets/bs_logo.svg`.
 
 The report uses the same custom prompt system as work packages. To update the private style guide/prompt on Railway, send a `.txt` file to the bot with caption `/set_work_prompt`, then check `/prompt_status`.
 

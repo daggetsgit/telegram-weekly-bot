@@ -158,6 +158,7 @@ OPENAI_REPORT_MAX_INPUT_CHARS=250000
 OPENAI_REPORT_TEMPERATURE=0.2
 OPENAI_REPORT_INCLUDE_IMAGES=true
 OPENAI_REPORT_MAX_IMAGES=6
+AI_REPORT_LOGO_PATH=assets/bs_logo.png
 ```
 
 После изменения variables Railway обычно делает redeploy.
@@ -228,6 +229,8 @@ OPENAI_REPORTS_ENABLED=true
 Это всё ещё MVP. Отчёт должен быть кратким, но не должен терять важные решения, суммы, условия, риски и задачи. Раздел задач обязателен и при структурированном ответе модели рендерится настоящей PDF-таблицей с ответственным, сроком и статусом.
 
 Contact sheets помогают модели читать видимый текст на скриншотах: ставки, валюты, ошибки доступа, условия и сообщения партнёров. `OPENAI_REPORT_MAX_IMAGES` ограничивает количество страниц contact sheet, отправляемых в OpenAI. Включение изображений может немного увеличить стоимость AI PDF-отчёта.
+
+`AI_REPORT_LOGO_PATH` может указывать на PNG/JPEG-логотип для шапки PDF. Если файл отсутствует или не читается, PDF строится без логотипа. Исходный SVG хранится в `assets/bs_logo.svg`.
 
 Для настройки стиля отчёта используется тот же custom prompt. На Railway его можно обновить через Telegram: отправить `.txt` файл с caption `/set_work_prompt`, затем проверить `/prompt_status`.
 

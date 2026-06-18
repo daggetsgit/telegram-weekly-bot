@@ -81,6 +81,7 @@ OPENAI_REPORT_MAX_INPUT_CHARS = get_int_env("OPENAI_REPORT_MAX_INPUT_CHARS", 250
 OPENAI_REPORT_TEMPERATURE = get_float_env("OPENAI_REPORT_TEMPERATURE", 0.2)
 OPENAI_REPORT_INCLUDE_IMAGES = os.getenv("OPENAI_REPORT_INCLUDE_IMAGES", "true").strip().lower() in ("1", "true", "yes", "on")
 OPENAI_REPORT_MAX_IMAGES = get_int_env("OPENAI_REPORT_MAX_IMAGES", 6)
+AI_REPORT_LOGO_PATH = Path(os.getenv("AI_REPORT_LOGO_PATH", "assets/bs_logo.png"))
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -3337,6 +3338,39 @@ def get_report_pdf_font_name() -> str:
     return "Helvetica"
 
 
+def resolve_ai_report_logo_path() -> Path:
+    path = AI_REPORT_LOGO_PATH
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def get_ai_report_logo_flowable(max_width: float, max_height: float):
+    from reportlab.platypus import Image as ReportLabImage
+
+    logo_path = resolve_ai_report_logo_path()
+    if not logo_path.exists():
+        return None
+
+    if logo_path.suffix.lower() == ".svg":
+        logging.warning(
+            "AI_REPORT_LOGO_PATH points to SVG, but SVG logos are not rendered without extra dependencies: %s",
+            logo_path,
+        )
+        return None
+
+    if logo_path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+        logging.warning("Unsupported AI report logo format: %s", logo_path)
+        return None
+
+    try:
+        with Image.open(logo_path) as img:
+            width, height = img.size
+        scale = min(max_width / width, max_height / height, 1.0)
+        return ReportLabImage(str(logo_path), width=width * scale, height=height * scale)
+    except Exception as e:
+        logging.warning("Could not load AI report logo %s: %s", logo_path, e)
+        return None
+
+
 def report_line_to_flowable(line: str, styles, font_name: str):
     from reportlab.platypus import Paragraph, Spacer
     from xml.sax.saxutils import escape
@@ -3350,7 +3384,7 @@ def report_line_to_flowable(line: str, styles, font_name: str):
         return Paragraph(f"<b>{escape(stripped)}</b>", styles["ReportHeading"])
 
     if stripped.startswith(("- ", "* ", "• ")):
-        return Paragraph("• " + escape(stripped[2:].strip()), styles["ReportBody"])
+        return Paragraph(f'<font color="#75A63C">•</font> {escape(stripped[2:].strip())}', styles["ReportBody"])
 
     return Paragraph(escape(stripped), styles["ReportBody"])
 
@@ -3428,7 +3462,7 @@ def add_report_bullets(story, title: str, items, styles):
 
     add_report_heading(story, title, styles)
     for item in items:
-        story.append(Paragraph("• " + escape(report_text_value(item)), styles["ReportBody"]))
+        story.append(Paragraph(f'<font color="#75A63C">•</font> {escape(report_text_value(item))}', styles["ReportBody"]))
 
 
 def add_key_topics(story, topics, styles):
@@ -3447,9 +3481,9 @@ def add_key_topics(story, topics, styles):
             if title and text:
                 story.append(Paragraph(f"<b>{escape(title)}.</b> {escape(text)}", styles["ReportBody"]))
             elif title or text:
-                story.append(Paragraph("• " + escape(title or text), styles["ReportBody"]))
+                story.append(Paragraph(f'<font color="#75A63C">•</font> {escape(title or text)}', styles["ReportBody"]))
         else:
-            story.append(Paragraph("• " + escape(report_text_value(topic)), styles["ReportBody"]))
+            story.append(Paragraph(f'<font color="#75A63C">•</font> {escape(report_text_value(topic))}', styles["ReportBody"]))
 
 
 def add_tasks_table(story, tasks, styles, available_width: float):
@@ -3497,9 +3531,9 @@ def add_tasks_table(story, tasks, styles, available_width: float):
         repeatRows=1,
     )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e9eef7")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cfd6e0")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4ea")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#224870")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7e1d1")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
@@ -3544,8 +3578,9 @@ def add_providers_table(story, providers, styles, available_width: float):
         repeatRows=1,
     )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e9eef7")),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cfd6e0")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4ea")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#224870")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7e1d1")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
@@ -3572,9 +3607,10 @@ def add_structured_report_text(story, report_data: dict, styles, available_width
 
 def render_one_page_report_pdf(report_text, chat_title, period_label, output_path, report_data=None):
     from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
     from xml.sax.saxutils import escape
 
     font_name = get_report_pdf_font_name()
@@ -3586,6 +3622,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         fontSize=14,
         leading=16,
         spaceAfter=3,
+        textColor="#224870",
     ))
     styles.add(ParagraphStyle(
         name="ReportMeta",
@@ -3604,6 +3641,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         leading=10.5,
         spaceBefore=3,
         spaceAfter=1,
+        textColor="#224870",
     ))
     styles.add(ParagraphStyle(
         name="ReportBody",
@@ -3642,7 +3680,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         title=f"AI PDF report — {chat_title}",
     )
 
-    story = [
+    header_text = [
         Paragraph("Краткий рабочий отчёт", styles["ReportTitle"]),
         Paragraph(
             f"Чат: {escape(str(chat_title))}<br/>"
@@ -3650,8 +3688,25 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
             f"Дата подготовки: {datetime.now(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M')}",
             styles["ReportMeta"],
         ),
-        Spacer(1, 2),
     ]
+    logo = get_ai_report_logo_flowable(38 * mm, 14 * mm)
+    if logo:
+        header_table = Table(
+            [[logo, header_text]],
+            colWidths=[42 * mm, doc.width - 42 * mm],
+        )
+    else:
+        header_table = Table([[header_text]], colWidths=[doc.width])
+    header_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.8, colors.HexColor("#224870")),
+    ]))
+
+    story = [header_table, Spacer(1, 4)]
 
     if isinstance(report_data, dict):
         add_structured_report_text(story, report_data, styles, doc.width)
@@ -3661,9 +3716,10 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
     def draw_footer(canvas, doc_obj):
         canvas.saveState()
         canvas.setFont(font_name, 7)
+        canvas.setFillColor(colors.HexColor("#777777"))
         footer = "Подготовлено на основе рабочего пакета Telegram"
         canvas.drawString(doc_obj.leftMargin, 7 * mm, footer)
-        canvas.drawRightString(A4[0] - doc_obj.rightMargin, 7 * mm, f"Стр. {doc_obj.page}")
+        canvas.drawRightString(A4[0] - doc_obj.rightMargin, 7 * mm, f"· Стр. {doc_obj.page}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
