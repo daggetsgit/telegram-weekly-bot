@@ -156,6 +156,8 @@ OPENAI_REPORT_MODEL=gpt-5-mini
 OPENAI_REPORT_TIMEOUT_SECONDS=180
 OPENAI_REPORT_MAX_INPUT_CHARS=250000
 OPENAI_REPORT_TEMPERATURE=0.2
+OPENAI_REPORT_INCLUDE_IMAGES=true
+OPENAI_REPORT_MAX_IMAGES=6
 ```
 
 После изменения variables Railway обычно делает redeploy.
@@ -221,9 +223,11 @@ OPENAI_REPORTS_ENABLED=false
 OPENAI_REPORTS_ENABLED=true
 ```
 
-После включения в личном admin flow `/report_chats` появятся кнопки `📄 Краткий PDF` для выбранного чата и периода. Бот берёт `chat_export.md`, `attachments_index.md` и текущий work analysis prompt, просит OpenAI подготовить компактный отчёт на 1–2 страницы, рендерит PDF и отправляет его администратору в личку.
+После включения в личном admin flow `/report_chats` появятся кнопки `📄 Краткий PDF` для выбранного чата и периода. Бот берёт `chat_export.md`, `attachments_index.md`, текущий work analysis prompt и, если `OPENAI_REPORT_INCLUDE_IMAGES=true`, image contact sheets за тот же период. Затем он просит OpenAI подготовить компактный отчёт на 1–2 страницы, рендерит PDF и отправляет его администратору в личку.
 
 Это всё ещё MVP. Отчёт должен быть кратким, но не должен терять важные решения, суммы, условия, риски и задачи. Раздел задач обязателен и при структурированном ответе модели рендерится настоящей PDF-таблицей с ответственным, сроком и статусом.
+
+Contact sheets помогают модели читать видимый текст на скриншотах: ставки, валюты, ошибки доступа, условия и сообщения партнёров. `OPENAI_REPORT_MAX_IMAGES` ограничивает количество страниц contact sheet, отправляемых в OpenAI. Включение изображений может немного увеличить стоимость AI PDF-отчёта.
 
 Для настройки стиля отчёта используется тот же custom prompt. На Railway его можно обновить через Telegram: отправить `.txt` файл с caption `/set_work_prompt`, затем проверить `/prompt_status`.
 

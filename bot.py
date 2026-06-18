@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import base64
 import sqlite3
 import logging
 import shutil
@@ -78,6 +79,8 @@ OPENAI_REPORT_MODEL = os.getenv("OPENAI_REPORT_MODEL", "gpt-5-mini")
 OPENAI_REPORT_TIMEOUT_SECONDS = get_int_env("OPENAI_REPORT_TIMEOUT_SECONDS", 180)
 OPENAI_REPORT_MAX_INPUT_CHARS = get_int_env("OPENAI_REPORT_MAX_INPUT_CHARS", 250000)
 OPENAI_REPORT_TEMPERATURE = get_float_env("OPENAI_REPORT_TEMPERATURE", 0.2)
+OPENAI_REPORT_INCLUDE_IMAGES = os.getenv("OPENAI_REPORT_INCLUDE_IMAGES", "true").strip().lower() in ("1", "true", "yes", "on")
+OPENAI_REPORT_MAX_IMAGES = get_int_env("OPENAI_REPORT_MAX_IMAGES", 6)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -2889,6 +2892,46 @@ def extract_openai_response_text(response) -> str:
     return "\n".join(parts).strip()
 
 
+def get_image_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def build_openai_report_image_inputs(contact_sheet_paths):
+    if not OPENAI_REPORT_INCLUDE_IMAGES:
+        return []
+
+    max_images = max(0, OPENAI_REPORT_MAX_IMAGES)
+    if max_images <= 0:
+        return []
+
+    image_inputs = []
+    for path in (contact_sheet_paths or [])[:max_images]:
+        path = Path(path)
+        if not path.exists() or not path.is_file():
+            continue
+
+        try:
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        except Exception as e:
+            logging.warning("Could not read AI PDF contact sheet image %s: %s", path.name, e)
+            continue
+
+        mime_type = get_image_mime_type(path)
+        image_inputs.append({
+            "type": "input_image",
+            "image_url": f"data:{mime_type};base64,{encoded}",
+        })
+
+    return image_inputs
+
+
 def parse_ai_report_json(report_text: str):
     expected_keys = {
         "summary",
@@ -3113,7 +3156,25 @@ def apply_important_facts_safety_net(report_data: dict):
             report_data.setdefault("risks_open_questions", []).append(compact_report_text(fact_text, 180))
 
 
-def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text):
+def create_openai_report_response(client, response_input):
+    try:
+        return client.responses.create(
+            model=OPENAI_REPORT_MODEL,
+            temperature=OPENAI_REPORT_TEMPERATURE,
+            input=response_input,
+        )
+    except Exception as e:
+        error_text = str(e).lower()
+        if "temperature" not in error_text and "unsupported" not in error_text:
+            raise
+        logging.warning("OpenAI report model rejected temperature; retrying without temperature.")
+        return client.responses.create(
+            model=OPENAI_REPORT_MODEL,
+            input=response_input,
+        )
+
+
+def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text, contact_sheet_paths=None):
     if not OPENAI_REPORTS_ENABLED:
         raise RuntimeError("AI PDF-отчёты отключены. Установите OPENAI_REPORTS_ENABLED=true.")
 
@@ -3137,6 +3198,7 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
 Главный источник правил анализа — блок WORK_ANALYSIS_PROMPT в пользовательском сообщении.
 Ты должен строго следовать WORK_ANALYSIS_PROMPT и применить его к CHAT_EXPORT и ATTACHMENTS_INDEX.
 Не игнорируй правила из WORK_ANALYSIS_PROMPT про изображения/скриншоты, voice/audio transcripts, Zoom/AI-summary, провайдеров/партнёров, компактность и запрет технической “кухни”.
+Если к запросу приложены image contact sheets, анализируй их как изображения: извлекай видимый текст, суммы, ставки, валюты, статусы, ошибки доступа и сообщения внешних партнёров, связывая их с captions/context из ATTACHMENTS_INDEX и CHAT_EXPORT.
 Если есть конфликт между этой технической обвязкой и WORK_ANALYSIS_PROMPT, приоритет у WORK_ANALYSIS_PROMPT, кроме обязательного требования вернуть валидный JSON по OUTPUT_FORMAT.
 
 Не повторяй одну и ту же мысль в нескольких JSON-разделах:
@@ -3187,6 +3249,7 @@ important_facts нужен как safety net, чтобы факты из изо�
 Примеры:
 - SAR в банковском интерфейсе: fact “SAR предварительно доступен по скриншоту банковского интерфейса”; action “проверить комиссии, реквизиты и условия перевода”.
 - Ставки Согаз 2 100 / 4 200 / 7 300 RUB: fact “на скриншоте видны ставки 2 100 / 4 200 / 7 300 RUB”; action “подтвердить актуальность конкретных ставок”.
+- Mayday: если на скриншоте видны ремонт, выезды в дом/отель или условия работы, включи это как факт партнёра и связанный следующий шаг.
 - Ошибка доступа Loodsen: fact “ссылка не пускала из-за недостаточного уровня доступа”; action “на будущие встречи нужен тест доступа и резервный Zoom”.
 Если данных мало — не заполняй искусственно. Если данных много — выбери главное.
 """
@@ -3211,26 +3274,25 @@ ATTACHMENTS_INDEX:
         timeout=OPENAI_REPORT_TIMEOUT_SECONDS,
     )
 
+    image_inputs = build_openai_report_image_inputs(contact_sheet_paths)
+    user_content = [{"type": "input_text", "text": user_input}] + image_inputs
+
     response_input = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_input},
+        {"role": "user", "content": user_content},
     ]
 
     try:
-        response = client.responses.create(
-            model=OPENAI_REPORT_MODEL,
-            temperature=OPENAI_REPORT_TEMPERATURE,
-            input=response_input,
-        )
-    except Exception as e:
-        error_text = str(e).lower()
-        if "temperature" not in error_text and "unsupported" not in error_text:
+        response = create_openai_report_response(client, response_input)
+    except Exception:
+        if not image_inputs:
             raise
-        logging.warning("OpenAI report model rejected temperature; retrying without temperature.")
-        response = client.responses.create(
-            model=OPENAI_REPORT_MODEL,
-            input=response_input,
-        )
+        logging.exception("OpenAI report image input failed; retrying AI PDF as text-only.")
+        text_only_input = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input},
+        ]
+        response = create_openai_report_response(client, text_only_input)
 
     report_text = extract_openai_response_text(response)
     if not report_text:
@@ -3667,6 +3729,15 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
         period_label=period_label,
     )
 
+    contact_sheet_paths = create_contact_sheets(
+        1,
+        chat_id=source_chat_id,
+        chat_title_for_filename=source_chat_title,
+        since_dt=since_dt,
+        until_dt=until_dt,
+        period_label=period_label,
+    )
+
     prompt_text = get_chatgpt_work_prompt(source_chat_title, 1, period_label)
     chat_export_text = export_path.read_text(encoding="utf-8")
     attachments_index_text = attachments_index_path.read_text(encoding="utf-8")
@@ -3677,6 +3748,7 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
         chat_export_text,
         attachments_index_text,
         prompt_text,
+        contact_sheet_paths=contact_sheet_paths,
     )
 
     pdf_path = create_ai_pdf_output_path(source_chat_title, mode)

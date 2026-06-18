@@ -279,6 +279,8 @@ OPENAI_REPORT_MODEL=gpt-5-mini
 OPENAI_REPORT_TIMEOUT_SECONDS=180
 OPENAI_REPORT_MAX_INPUT_CHARS=250000
 OPENAI_REPORT_TEMPERATURE=0.2
+OPENAI_REPORT_INCLUDE_IMAGES=true
+OPENAI_REPORT_MAX_IMAGES=6
 ```
 
 ## AI PDF Reports
@@ -291,9 +293,11 @@ This feature is disabled by default. To enable it:
 OPENAI_REPORTS_ENABLED=true
 ```
 
-When enabled, the private admin `/report_chats` flow shows an extra `📄 Краткий PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, asks OpenAI for a compact 1–2 page report, renders it as PDF, and sends it to the admin in private chat.
+When enabled, the private admin `/report_chats` flow shows an extra `📄 Краткий PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, adds image contact sheets when `OPENAI_REPORT_INCLUDE_IMAGES=true`, asks OpenAI for a compact 1–2 page report, renders it as PDF, and sends it to the admin in private chat.
 
 The AI PDF report is still an MVP. It aims to keep the report concise without dropping important decisions, amounts, risks, and action items. The tasks section is rendered as a real PDF table with owner, deadline, and status columns when the model returns structured data.
+
+Image contact sheets help the model read visible text in screenshots, such as prices, currencies, access errors, and partner messages. `OPENAI_REPORT_MAX_IMAGES` limits how many contact sheet pages are sent. Including images may slightly increase OpenAI API cost.
 
 The report uses the same custom prompt system as work packages. To update the private style guide/prompt on Railway, send a `.txt` file to the bot with caption `/set_work_prompt`, then check `/prompt_status`.
 
