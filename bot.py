@@ -81,6 +81,7 @@ OPENAI_REPORT_MAX_INPUT_CHARS = get_int_env("OPENAI_REPORT_MAX_INPUT_CHARS", 250
 OPENAI_REPORT_TEMPERATURE = get_float_env("OPENAI_REPORT_TEMPERATURE", 0.2)
 OPENAI_REPORT_INCLUDE_IMAGES = os.getenv("OPENAI_REPORT_INCLUDE_IMAGES", "true").strip().lower() in ("1", "true", "yes", "on")
 OPENAI_REPORT_MAX_IMAGES = get_int_env("OPENAI_REPORT_MAX_IMAGES", 6)
+OPENAI_REPORT_TWO_PASS = os.getenv("OPENAI_REPORT_TWO_PASS", "true").strip().lower() in ("1", "true", "yes", "on")
 AI_REPORT_LOGO_PATH = Path(os.getenv("AI_REPORT_LOGO_PATH", "assets/bs_logo.png"))
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -2969,6 +2970,42 @@ def parse_ai_report_json(report_text: str):
     return None
 
 
+def parse_ai_analysis_json(report_text: str):
+    expected_keys = {
+        "source_facts",
+        "important_numbers",
+        "external_parties",
+        "decisions",
+        "open_questions",
+        "risks",
+        "action_items",
+        "possible_inconsistencies",
+    }
+    text = (report_text or "").strip()
+    if not text:
+        return None
+
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    candidates = [text]
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        candidates.append(text[first_brace:last_brace + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict) and any(key in parsed for key in expected_keys):
+            return parsed
+
+    return None
+
+
 def compact_report_text(value, max_chars: int, default: str = "") -> str:
     text = report_text_value(value, default)
     text = re.sub(r"\s+", " ", text).strip()
@@ -3177,6 +3214,146 @@ def create_openai_report_response(client, response_input):
         )
 
 
+def run_ai_report_analysis_pass(client, chat_title, period_label, prompt_text, chat_export_text, attachments_index_text, image_inputs):
+    system_prompt = """Ты выполняешь первый этап AI PDF pipeline: extract / analysis pass.
+
+Не пиши красивый отчёт. Верни только валидный JSON с рабочей аналитикой.
+Главный источник правил анализа — WORK_ANALYSIS_PROMPT. Применяй его к CHAT_EXPORT, ATTACHMENTS_INDEX и приложенным image contact sheets.
+Особенно внимательно извлекай видимые на изображениях цифры, ставки, валюты, статусы, ошибки доступа и условия. Не меняй цифры, считанные с изображений.
+Если есть сомнение в OCR/vision, ставь confidence=medium или low и needs_verification=true.
+Не создавай задачи без target_party и deliverable. Каждая задача должна отвечать: кто кому/у кого что делает и какой результат нужен.
+Не логируй и не возвращай техническую кухню бота.
+"""
+
+    analysis_schema = """ANALYSIS_JSON_SCHEMA:
+{
+  "source_facts": [
+    {
+      "fact": "факт из источников",
+      "source_type": "chat|voice|image|attachment_index",
+      "confidence": "high|medium|low",
+      "needs_verification": true
+    }
+  ],
+  "important_numbers": [
+    {
+      "label": "что означает число",
+      "value": "точное значение без изменения",
+      "currency_or_unit": "валюта или единица",
+      "source": "откуда взято",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "external_parties": [
+    {
+      "name": "название стороны",
+      "type": "client|insurer|provider|clinic|assistance|bank|platform|internal",
+      "status": "текущий статус",
+      "what_they_need": "что им нужно",
+      "what_we_need_from_them": "что нужно получить от них"
+    }
+  ],
+  "decisions": [],
+  "open_questions": [],
+  "risks": [],
+  "action_items": [
+    {
+      "actor": "ответственный или не назначен",
+      "target_party": "кому / у кого / для кого",
+      "action": "конкретное действие",
+      "deliverable": "что должно появиться на выходе",
+      "reason": "зачем это нужно",
+      "source_context": "коротко откуда задача",
+      "deadline": "дата или не указан",
+      "status": "новая|в работе|ожидает ответа|требует подтверждения"
+    }
+  ],
+  "possible_inconsistencies": [
+    {
+      "issue": "возможная ошибка, конфликт или сомнение",
+      "why_it_matters": "почему это важно",
+      "how_to_handle": "как обработать"
+    }
+  ]
+}
+"""
+
+    user_input = f"""Чат: {chat_title}
+Период: {period_label}
+
+WORK_ANALYSIS_PROMPT:
+{prompt_text}
+
+CHAT_EXPORT:
+{chat_export_text}
+
+ATTACHMENTS_INDEX:
+{attachments_index_text}
+
+{analysis_schema}
+"""
+
+    user_content = [{"type": "input_text", "text": user_input}] + image_inputs
+    response_input = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    try:
+        response = create_openai_report_response(client, response_input)
+    except Exception:
+        if not image_inputs:
+            raise
+        logging.exception("OpenAI report analysis image input failed; retrying analysis as text-only.")
+        response = create_openai_report_response(client, [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input},
+        ])
+
+    analysis_text = extract_openai_response_text(response)
+    analysis_data = parse_ai_analysis_json(analysis_text)
+    if analysis_data is None:
+        raise RuntimeError("OpenAI analysis pass returned unrecognized JSON.")
+
+    return analysis_data
+
+
+def run_ai_report_final_pass(client, chat_title, period_label, prompt_text, analysis_data, output_format):
+    system_prompt = """Ты выполняешь второй этап AI PDF pipeline: final report pass.
+
+Сформируй финальный JSON для PDF только на основе ANALYSIS_JSON и правил WORK_ANALYSIS_PROMPT.
+Не придумывай новые факты, стороны, цифры, сроки или решения, которых нет в ANALYSIS_JSON.
+Не меняй значения из important_numbers. Если есть possible_inconsistencies, вынеси их в risks_open_questions.
+Tasks строй из action_items, сохраняя actor, target_party, deliverable и source_context.
+Если actor неизвестен — owner должен быть “не назначен”. Если deadline неизвестен — deadline должен быть “не указан”.
+Верни только валидный JSON по OUTPUT_FORMAT, без Markdown и пояснений.
+"""
+
+    user_input = f"""Чат: {chat_title}
+Период: {period_label}
+
+WORK_ANALYSIS_PROMPT:
+{prompt_text}
+
+ANALYSIS_JSON:
+{json.dumps(analysis_data, ensure_ascii=False, indent=2)}
+
+{output_format}
+"""
+
+    response = create_openai_report_response(client, [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_input},
+    ])
+
+    report_text = extract_openai_response_text(response)
+    report_data = parse_ai_report_json(report_text)
+    if report_data is None:
+        raise RuntimeError("OpenAI final report pass returned unrecognized JSON.")
+
+    return report_text, report_data
+
+
 def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text, contact_sheet_paths=None):
     if not OPENAI_REPORTS_ENABLED:
         raise RuntimeError("AI PDF-отчёты отключены. Установите OPENAI_REPORTS_ENABLED=true.")
@@ -3289,6 +3466,30 @@ ATTACHMENTS_INDEX:
     )
 
     image_inputs = build_openai_report_image_inputs(contact_sheet_paths)
+
+    if OPENAI_REPORT_TWO_PASS:
+        try:
+            analysis_data = run_ai_report_analysis_pass(
+                client,
+                chat_title,
+                period_label,
+                prompt_text,
+                chat_export_text,
+                attachments_index_text,
+                image_inputs,
+            )
+            report_text, report_data = run_ai_report_final_pass(
+                client,
+                chat_title,
+                period_label,
+                prompt_text,
+                analysis_data,
+                output_format,
+            )
+            return report_text, normalize_ai_report_data(report_data)
+        except Exception:
+            logging.exception("Two-pass AI PDF report failed; retrying single-pass report.")
+
     user_content = [{"type": "input_text", "text": user_input}] + image_inputs
 
     response_input = [
