@@ -3018,11 +3018,13 @@ def compact_pdf_short_value(value: str) -> str:
     text = report_text_value(value)
     lowered = text.lower()
     if "требуется назначить" in lowered:
-        return "назначить"
+        return "не назначен"
     if "требуется подтверждение" in lowered:
-        return "уточнить"
+        return "не указан"
     if "не указан" in lowered:
         return "не указан"
+    if "не назначен" in lowered:
+        return "не назначен"
     return compact_report_text(text, 70)
 
 
@@ -3055,16 +3057,16 @@ def normalize_ai_report_data(report_data: dict) -> dict:
     for task in report_list(report_data.get("tasks")):
         if not isinstance(task, dict):
             continue
-        task_text = compact_report_text(task.get("task"), 160)
+        task_text = compact_report_text(task.get("task"), 180)
         if is_duplicate_report_item(task_text, task_seen):
             continue
-        context = compact_report_text(task.get("context"), 120)
+        context = compact_report_text(task.get("context"), 130)
         if normalize_report_dedupe_key(context) == normalize_report_dedupe_key(task_text):
             context = ""
         tasks.append({
             "task": task_text,
-            "owner": compact_report_text(task.get("owner"), 70, "не указан / требуется назначить"),
-            "deadline": compact_report_text(task.get("deadline"), 70, "не указан / требуется подтверждение"),
+            "owner": compact_report_text(task.get("owner"), 70, "не назначен"),
+            "deadline": compact_report_text(task.get("deadline"), 70, "не указан"),
             "context": context,
             "status": compact_report_text(task.get("status"), 70, "не указан"),
         })
@@ -3210,6 +3212,16 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
 - risks_open_questions — только неопределённости/риски, не повторяй задачи;
 - next_steps — короткий приоритетный список, не копируй таблицу задач.
 
+Задачи должны быть операционными, а не общими темами:
+- каждая задача содержит конкретное действие;
+- если есть внешняя сторона, укажи её прямо в task: кому отправить, у кого запросить, с кем согласовать;
+- формулируй task по смыслу “сделать X для/у Y, чтобы получить Z”;
+- не создавай задачи вида “уточнить” без объекта: должно быть понятно, что уточнить, у кого и зачем;
+- не превращай тему в задачу, если нет следующего действия;
+- owner заполняй только если ответственный явно указан в чате, иначе “не назначен”;
+- deadline заполняй только если срок явно указан, иначе “не указан”;
+- status используй один из вариантов: “новая”, “в работе”, “ожидает ответа”, “требует подтверждения”.
+
 Верни только валидный JSON без Markdown и пояснений.
 """
 
@@ -3222,11 +3234,11 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
   "decisions": ["до 4 решений или текущих статусов, каждый до 180 символов"],
   "tasks": [
     {
-      "task": "конкретное действие, до 160 символов",
-      "owner": "ответственный или не указан / требуется назначить",
-      "deadline": "срок или не указан / требуется подтверждение",
-      "context": "короткий контекст, суммы, условия или источник решения, до 120 символов",
-      "status": "статус"
+      "task": "конкретное действие в формате “сделать X для/у Y, чтобы получить Z”, до 180 символов",
+      "owner": "явно указанный ответственный или “не назначен”",
+      "deadline": "дата/срок или “не указан”",
+      "context": "короткая причина/источник задачи + важные цифры/условия, до 130 символов",
+      "status": "новая / в работе / ожидает ответа / требует подтверждения"
     }
   ],
   "risks_open_questions": ["до 5 рисков или открытых вопросов, каждый до 180 символов"],
@@ -3505,28 +3517,28 @@ def add_tasks_table(story, tasks, styles, available_width: float):
     ]]
 
     for task in rows:
-        task_text = compact_report_text(task.get("task"), 160, "не указано")
-        context = compact_report_text(task.get("context"), 120)
+        task_text = compact_report_text(task.get("task"), 180, "не указано")
+        context = compact_report_text(task.get("context"), 130)
         if normalize_report_dedupe_key(context) == normalize_report_dedupe_key(task_text):
             context = ""
         task_cell = f"<b>{escape(task_text)}</b>"
         if context:
-            task_cell += f"<br/><font size=\"6.6\">{escape(context)}</font>"
+            task_cell += f"<br/><font size=\"6.5\" color=\"#666666\">{escape(context)}</font>"
 
         table_rows.append([
             Paragraph(task_cell, styles["TableCell"]),
-            Paragraph(escape(compact_pdf_short_value(task.get("owner")) or "не указан"), styles["TableCell"]),
-            Paragraph(escape(compact_pdf_short_value(task.get("deadline")) or "уточнить"), styles["TableCell"]),
+            Paragraph(escape(compact_pdf_short_value(task.get("owner")) or "не назначен"), styles["TableCell"]),
+            Paragraph(escape(compact_pdf_short_value(task.get("deadline")) or "не указан"), styles["TableCell"]),
             Paragraph(escape(compact_pdf_short_value(task.get("status")) or "не указан"), styles["TableCell"]),
         ])
 
     table = Table(
         table_rows,
         colWidths=[
-            available_width * 0.46,
-            available_width * 0.18,
-            available_width * 0.16,
-            available_width * 0.20,
+            available_width * 0.52,
+            available_width * 0.17,
+            available_width * 0.14,
+            available_width * 0.17,
         ],
         repeatRows=1,
     )
@@ -3619,19 +3631,19 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         name="ReportTitle",
         parent=styles["Title"],
         fontName=font_name,
-        fontSize=14,
-        leading=16,
-        spaceAfter=3,
+        fontSize=13,
+        leading=14.5,
+        spaceAfter=1,
         textColor="#224870",
     ))
     styles.add(ParagraphStyle(
         name="ReportMeta",
         parent=styles["Normal"],
         fontName=font_name,
-        fontSize=8,
-        leading=9.5,
+        fontSize=7.6,
+        leading=8.8,
         textColor="#555555",
-        spaceAfter=3,
+        spaceAfter=1,
     ))
     styles.add(ParagraphStyle(
         name="ReportHeading",
@@ -3689,24 +3701,24 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
             styles["ReportMeta"],
         ),
     ]
-    logo = get_ai_report_logo_flowable(38 * mm, 14 * mm)
+    logo = get_ai_report_logo_flowable(34 * mm, 10 * mm)
     if logo:
         header_table = Table(
             [[logo, header_text]],
-            colWidths=[42 * mm, doc.width - 42 * mm],
+            colWidths=[37 * mm, doc.width - 37 * mm],
         )
     else:
         header_table = Table([[header_text]], colWidths=[doc.width])
     header_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("LINEBELOW", (0, 0), (-1, -1), 0.8, colors.HexColor("#224870")),
     ]))
 
-    story = [header_table, Spacer(1, 4)]
+    story = [header_table, Spacer(1, 3)]
 
     if isinstance(report_data, dict):
         add_structured_report_text(story, report_data, styles, doc.width)
