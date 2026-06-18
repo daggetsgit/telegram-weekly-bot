@@ -243,6 +243,7 @@ WORK_SHIFT_START_HOUR=9
 BOT_VERSION=0.6.0
 BOT_BUILD_NAME=openai-voice-transcription
 BOT_BUILD_DATE=2026-06-16
+WORK_ANALYSIS_PROMPT_PATH=data/config/work_analysis_prompt.txt
 ```
 
 Contact sheets:
@@ -269,6 +270,51 @@ TRANSCRIBE_MODEL=gpt-4o-mini-transcribe
 TRANSCRIBE_MAX_AUDIO_MB=25
 TRANSCRIBE_TIMEOUT_SECONDS=120
 ```
+
+## Custom Work Analysis Prompt
+
+The work package includes `work_analysis_prompt.txt`. Its template can be customized without editing `bot.py`.
+
+The public generic example is:
+
+```text
+prompts/work_analysis_prompt.example.txt
+```
+
+For a private deployment, copy it to:
+
+```text
+data/config/work_analysis_prompt.txt
+```
+
+or set:
+
+```env
+WORK_ANALYSIS_PROMPT_PATH=/custom/path/work_analysis_prompt.txt
+```
+
+The template supports placeholders:
+
+```text
+{chat_title}
+{period_label}
+```
+
+Private prompts should not be committed. On Railway, keep the private prompt in the persistent volume:
+
+```text
+/app/data/config/work_analysis_prompt.txt
+```
+
+Railway upload flow:
+
+1. Open a private chat with the bot as an admin.
+2. Send the private `.txt` prompt file with caption `/set_work_prompt`.
+3. Check `/prompt_status`.
+
+The bot stores the prompt in the Railway volume and creates a backup before replacing an existing custom prompt. To disable the custom prompt and return to the public example/fallback, use `/reset_work_prompt`.
+
+If the private file is missing, the bot uses `prompts/work_analysis_prompt.example.txt`. If that is also missing, it falls back to a short built-in generic prompt.
 
 ## Deployment
 

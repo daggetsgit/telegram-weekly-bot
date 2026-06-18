@@ -120,6 +120,7 @@ WORK_SHIFT_START_HOUR=9
 BOT_VERSION=0.6.0
 BOT_BUILD_NAME=openai-voice-transcription
 BOT_BUILD_DATE=2026-06-16
+WORK_ANALYSIS_PROMPT_PATH=data/config/work_analysis_prompt.txt
 ```
 
 Contact sheet settings:
@@ -149,7 +150,52 @@ TRANSCRIBE_TIMEOUT_SECONDS=120
 
 После изменения variables Railway обычно делает redeploy.
 
-## 7.1 OpenAI API для транскрибации голосовых
+## 7.1 Настроить prompt для рабочего анализа
+
+Бот генерирует `work_analysis_prompt.txt` внутри рабочего пакета. Этот prompt можно кастомизировать без изменения `bot.py`.
+
+Публичный нейтральный пример лежит в репозитории:
+
+```text
+prompts/work_analysis_prompt.example.txt
+```
+
+Для своего деплоя скопировать его в приватный файл:
+
+```text
+data/config/work_analysis_prompt.txt
+```
+
+или указать свой путь через Railway Variables:
+
+```env
+WORK_ANALYSIS_PROMPT_PATH=/app/data/config/work_analysis_prompt.txt
+```
+
+Template поддерживает placeholders:
+
+```text
+{chat_title}
+{period_label}
+```
+
+Приватный prompt не нужно коммитить. На Railway файл должен лежать в Volume:
+
+```text
+/app/data/config/work_analysis_prompt.txt
+```
+
+Самый простой способ загрузить приватный prompt на Railway:
+
+1. Открыть личный чат с ботом от имени администратора.
+2. Отправить `.txt` файл с prompt и caption `/set_work_prompt`.
+3. Проверить источник prompt командой `/prompt_status`.
+
+Бот сохранит prompt в Railway Volume и перед заменой существующего custom prompt создаст backup рядом с файлом. Чтобы отключить custom prompt и вернуться к public example/fallback, использовать `/reset_work_prompt`.
+
+Если приватного файла нет, бот использует `prompts/work_analysis_prompt.example.txt`. Если example тоже отсутствует, используется короткий встроенный generic prompt.
+
+## 7.2 OpenAI API для транскрибации голосовых
 
 ChatGPT Plus и OpenAI API — это разные продукты. Подписка ChatGPT Plus не даёт автоматически API-доступ и не оплачивает API-запросы.
 

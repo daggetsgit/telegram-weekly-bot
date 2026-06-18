@@ -72,6 +72,10 @@ DATA_DIR = BASE_DIR / "data"
 EXPORT_DIR = DATA_DIR / "exports"
 FILES_DIR = DATA_DIR / "files"
 TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
+PROMPTS_DIR = BASE_DIR / "prompts"
+DEFAULT_WORK_ANALYSIS_PROMPT_PATH = DATA_DIR / "config" / "work_analysis_prompt.txt"
+WORK_ANALYSIS_PROMPT_PATH = Path(os.getenv("WORK_ANALYSIS_PROMPT_PATH", str(DEFAULT_WORK_ANALYSIS_PROMPT_PATH)))
+WORK_ANALYSIS_PROMPT_EXAMPLE_PATH = PROMPTS_DIR / "work_analysis_prompt.example.txt"
 DB_PATH = DATA_DIR / "messages.db"
 RETENTION_DAYS = 14
 
@@ -2772,160 +2776,79 @@ def get_friendly_summary_prompt(chat_title: str, days: int = 7) -> str:
 
 
 
+WORK_ANALYSIS_PROMPT_FALLBACK = """You are an analyst of work chat communication.
+
+Analyze the uploaded work package for chat "{chat_title}" and period: {period_label}.
+
+Use chat_export.md, attachments_index.md, available attachments, screenshots, and voice/audio transcripts if present.
+Do not invent missing information. If something is unclear, write "not specified / requires confirmation".
+
+Return a concise practical report:
+1. Executive summary
+2. Period summary
+3. Key topics
+4. Decisions and current status
+5. Tasks and owners
+6. Open questions
+7. Risks and issues
+8. Contract / Provider Review, if applicable
+9. Important files and materials
+10. Next steps
+"""
+
+
+def resolve_work_analysis_prompt_path(path: Path) -> Path:
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def load_work_analysis_prompt_template() -> str:
+    custom_path = resolve_work_analysis_prompt_path(WORK_ANALYSIS_PROMPT_PATH)
+    candidates = [
+        ("custom", custom_path),
+        ("example", WORK_ANALYSIS_PROMPT_EXAMPLE_PATH),
+    ]
+
+    for source_name, path in candidates:
+        try:
+            if path.exists():
+                logging.info("Work analysis prompt template loaded from %s: %s", source_name, path)
+                return path.read_text(encoding="utf-8")
+        except Exception as e:
+            logging.warning("Could not load work analysis prompt template from %s: %s", path, e)
+
+    logging.warning(
+        "Work analysis prompt template not found. "
+        "Using built-in generic fallback prompt."
+    )
+    return WORK_ANALYSIS_PROMPT_FALLBACK
+
+
+def render_work_analysis_prompt_template(template: str, chat_title: str, period_label: str) -> str:
+    return (
+        template
+        .replace("{chat_title}", chat_title)
+        .replace("{period_label}", period_label)
+    )
+
+
+def get_work_analysis_prompt_source():
+    custom_path = resolve_work_analysis_prompt_path(WORK_ANALYSIS_PROMPT_PATH)
+    if custom_path.exists():
+        return "custom file", custom_path
+    if WORK_ANALYSIS_PROMPT_EXAMPLE_PATH.exists():
+        return "example file", WORK_ANALYSIS_PROMPT_EXAMPLE_PATH
+    return "fallback", None
+
+
+def get_prompt_backup_path(prompt_path: Path) -> Path:
+    timestamp = datetime.now(APP_TIMEZONE).strftime("%Y%m%d-%H%M%S")
+    return prompt_path.with_name(f"work_analysis_prompt.backup-{timestamp}.txt")
+
+
 def get_chatgpt_work_prompt(chat_title: str, days: int = 7, period_label: str = None) -> str:
     period_text = period_label or f"последние {days} дней"
-
-    return f"""Ты — аналитик рабочей коммуникации и помощник руководителя.
-
-Я загрузил рабочий пакет с экспортом Telegram-чата "{chat_title}" за период: {period_text}.
-
-В пакете могут быть:
-1. chat_export.md — полная переписка за период.
-2. attachments_index.md — индекс вложений: файлы, фото, документы, аудио, подписи и контекст вокруг них.
-3. image contact sheets — визуальный обзор изображений и скриншотов.
-4. transcript files для voice/audio, если они доступны.
-5. Отдельные вложения или полный ZIP-архив, если они были загружены дополнительно.
-
-Контекст компании:
-Best Service Assistance — компания медицинского ассистанса. В рабочих чатах могут встречаться чувствительные медицинские, юридические и страховые темы: смерть пациента, тело/труп, травмы, ДТП, госпитализация, операции, медицинская эвакуация, репатриация, полиция, насилие, страховые споры, финансовые претензии, счета клиник и другие сложные случаи.
-
-Такие упоминания являются частью профессионального контекста medical assistance. Не исключай их автоматически и не прекращай анализ. Обрабатывай такие темы нейтрально, деловым языком, без сенсационности, без лишних графичных деталей и без домыслов. Фиксируй только то, что нужно для понимания задач, решений, рисков, сроков, ответственных и дальнейших действий.
-
-Порядок анализа:
-- Сначала прочитай chat_export.md.
-- Затем изучи attachments_index.md.
-- Если загружены отдельные документы, изображения, скриншоты или файлы — изучи их содержимое.
-- Если есть contact sheets, используй их как визуальный обзор изображений и скриншотов.
-- Если есть изображения или скриншоты, анализируй видимый текст, интерфейсы, таблицы, документы, ошибки, суммы, даты, имена, статусы и другие важные детали.
-- Если текст на contact sheet слишком мелкий или нечитаемый, используй attachments_index.md и ZIP, чтобы найти или запросить оригинальный файл.
-- Если есть PDF, Word, Excel, презентации или текстовые документы — изучи их содержимое, если оно доступно.
-- Если есть аудио или голосовые, применяй правила по transcript ниже.
-- Если есть вставленные summary, черновики, AI-отчёты или списки задач внутри чата, анализируй их как сообщения участников, но не считай автоматически подтверждёнными фактами.
-
-Работа с voice/audio transcripts:
-- Если voice/audio имеет transcript со статусом ok, используй transcript как рабочий источник.
-- Не проси ручную расшифровку, если transcript уже есть.
-- Помни, что transcript автоматический. Если деталь критичная, формулируй деловым языком: “сумму/условие желательно сверить с оригинальным голосовым сообщением перед финальным решением”.
-- Не пиши в финальном отчёте технические фразы вроде “Transcript status: ok”, “Automatic transcript”, “verify against original audio if critical”.
-- Если transcript отсутствует, failed или skipped, не выдумывай содержание voice/audio.
-- Для voice/audio без usable transcript используй только факт наличия файла и контекст сообщений до/после.
-- Такие voice/audio упоминай только там, где это важно для рисков, открытых вопросов или следующих шагов.
-
-Работа со скриншотами как подтверждениями:
-- Если изображение или скриншот отправлен сразу после вопроса, уточнения или обсуждения, а рядом есть короткие реакции вроде “ага”, “супер”, “ок”, “принято”, анализируй скриншот как возможное подтверждение факта или решения.
-- Обязательно смотри видимый текст на скриншоте и связывай его с предыдущими и следующими сообщениями.
-- Если скриншот подтверждает валюту, реквизиты, сумму, доступность опции, статус доступа, ошибку, дату или имя, вынеси это в решения, риски или следующие шаги.
-- Пример логики: если обсуждали оплату в SAR, затем отправлен скриншот с Saudi Riyal/SAR в банковском интерфейсе, а после него ответ “Супер”, трактуй это как вероятное подтверждение технической доступности SAR, а не как нейтральную картинку.
-- Если скриншот подтверждает факт, не описывай его технически как файл. Пиши управленчески: “Возможность оплаты в SAR предварительно подтверждена: в банковском интерфейсе доступна валюта Saudi Riyal. Перед оплатой нужно уточнить комиссии, реквизиты и фактические условия перевода.”
-
-Работа со вставленными summary, черновиками и AI-отчётами:
-- Если в переписке есть вставленные summary, черновики, отчёты, списки задач с [Цитата] или похожими placeholders, анализируй их как сообщение участника чата.
-- Не считай такие тексты автоматически подтверждёнными фактами.
-- Разделяй факты, явно зафиксированные в переписке; пересказ встречи или черновик участника; предположения или неподтверждённые формулировки.
-- Не используй пустые placeholders вроде [Цитата] в итоговом отчёте.
-
-Contract / Provider Review:
-Если чат содержит договоры, credit application forms, provider agreements, прайсы, реквизиты, условия оплаты или обсуждение подключения клиник/провайдеров, добавь отдельный раздел “Contract / Provider Review”.
-
-В этом разделе для каждого провайдера или сети укажи:
-- название провайдера;
-- страна/город;
-- тип: клиника, госпитальная сеть, ассистанс, частная практика, посредник;
-- статус: новый контакт / договор на проверке / можно подписывать / требует уточнений / риск;
-- ключевые финансовые условия: валюта, срок оплаты, штрафы, депозит, кредитный лимит, кто несёт конвертационные расходы, кто получает оплату;
-- юридические и операционные риски: кто подписывает, на каком основании, есть ли лицензии/доверенности/регистрационные документы, можно ли платить физлицу, применимое право/арбитраж, требования к отчётности;
-- документы, которые нужно запросить или проверить;
-- рекомендация: можно двигаться дальше / можно подписывать с оговорками / требуется юридическая или финансовая проверка / не подписывать до уточнения.
-
-Трудночитаемые форматы:
-- Если вложение .pages, .numbers, .key или другой формат, который нельзя надёжно прочитать, не делай вид, что файл изучен.
-- Используй только текстовый контекст из чата и явно пиши: “документ требует конвертации в PDF/DOCX/XLSX для полноценного анализа”.
-- Если участник выписал условия документа текстом, анализируй эти условия как пересказ участника, но отметь, что оригинал нужно проверить отдельно.
-
-Правила финального отчёта:
-- Отчёт должен быть пригоден для отправки руководителю или команде без дополнительной чистки.
-- Отчёт предназначен для всей рабочей группы, а не только для руководителей. Он должен быть аккуратным для руководителей, но достаточно практичным, чтобы участники группы могли продолжить работу по задачам.
-- Executive summary должен быть коротким, но рабочие разделы после него должны содержать достаточно деталей для команды: задачи, открытые вопросы, риски и следующие шаги.
-- Не включай техническую “кухню” бота: имена файлов вроде photo_5200.jpg или voice_5180.ogg, если они не нужны получателю; термины transcript cache, contact sheet, ZIP archive, local path; технические пути data/files/...; внутренние статусы бота.
-- Исключение: если файл или аудио реально недоступны для анализа, кратко объясни это человеческим языком в “Риски и проблемные места”, “Открытые вопросы”, “Следующие шаги” или “Contract / Provider Review”.
-- Всё, что требует проверки, включай в обычные управленческие разделы: “Риски и проблемные места”, “Открытые вопросы”, “Следующие шаги”, “Contract / Provider Review”, если применимо. Не создавай отдельный раздел ручной проверки.
-- В разделе файлов используй человеческие названия: “Credit application form Parkway”, “Medpoint agreement and price list”, “скриншот банковского интерфейса с SAR”, “скриншот доступа к конференции”.
-- Технические имена файлов указывай только если без них нельзя различить несколько документов.
-
-Нужный формат ответа:
-
-1. Executive summary
-Сначала дай 5–7 пунктов для руководителя: что произошло, какие решения приняты, где риски, что нужно сделать дальше.
-
-2. Краткое резюме периода
-В 5–10 предложениях опиши, что в целом обсуждали, какие были основные события, решения и рабочий контекст.
-
-3. Ключевые направления / темы
-Сгруппируй переписку по темам. Для каждой темы укажи:
-- краткое описание;
-- ключевые сообщения или выводы;
-- связанные файлы, если они есть;
-- текущий статус темы: закрыта / в работе / требует внимания / непонятно.
-
-4. Решения и текущий статус
-Отдельно перечисли решения, договорённости, подтверждения и текущий статус ключевых направлений. Если решение вероятно подтверждено скриншотом/реакцией, но подтверждение не стопроцентное, так и напиши.
-
-5. Задачи и поручения
-Таблица “Задачи и поручения” обязательна. Не убирай её даже если отчёт делается в executive style.
-
-Составь таблицу и обязательно сохрани колонки:
-- задача;
-- ответственный, если его можно определить;
-- срок, если он был указан или явно подразумевается;
-- контекст;
-- статус: новая / в работе / ожидает ответа / выполнена / риск просрочки.
-
-Если ответственный или срок не указаны явно, не выдумывай. Для ответственного пиши «не указан / требуется назначить». Для срока пиши «не указан / требуется подтверждение».
-
-6. Открытые вопросы
-Выдели вопросы, которые обсуждались, но не были закрыты. Для каждого укажи:
-- вопрос;
-- кто должен ответить, если понятно;
-- что нужно сделать дальше;
-- почему это важно.
-
-7. Риски и проблемные места
-Отметь возможные риски:
-- задержки;
-- отсутствие ответственного;
-- отсутствие срока;
-- финансовые вопросы;
-- конфликтные или спорные моменты;
-- срочные задачи;
-- темы, которые могут быть забыты;
-- документы или файлы, которые требуют проверки.
-
-8. Contract / Provider Review, если применимо
-Добавь этот раздел только если в чате есть договоры, провайдеры, формы подключения, реквизиты, прайсы или условия оплаты. Используй структуру из правил выше.
-
-9. Файлы и материалы, важные для решений
-Не перечисляй всё механически. Включай только материалы, которые влияют на решения, риски или задачи.
-
-Для каждого важного материала укажи:
-- человеческое название;
-- зачем он важен;
-- какой вывод или следующий шаг связан с материалом;
-- какой action нужен, если он понятен.
-
-Если файл нельзя прочитать, открыть, прослушать или понять — явно укажи это.
-
-10. Следующие шаги
-Сформируй короткий список приоритетных действий на ближайшие дни.
-
-Правила:
-- Не выдумывай факты, имена, сроки, решения или содержание файлов.
-- Если информации недостаточно, пиши “не указано / требуется подтверждение”.
-- Не пересказывай всю переписку подряд, а группируй информацию по смыслу.
-- Пиши деловым, нейтральным стилем.
-- Не делай длинный академический отчёт. Отчёт должен быть пригоден для руководителя.
-- Не включай технические подробности бота, если они не нужны для управленческого решения.
-- Если есть персональные или чувствительные данные, используй их только тогда, когда это необходимо для понимания задач и контекста.
-"""
+    template = load_work_analysis_prompt_template()
+    return render_work_analysis_prompt_template(template, chat_title, period_text)
 
 
 
@@ -2954,6 +2877,152 @@ async def weekly_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await legacy_command_notice(update, "/weekly_package")
+
+
+async def prompt_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
+
+    custom_path = resolve_work_analysis_prompt_path(WORK_ANALYSIS_PROMPT_PATH)
+    source_name, source_path = get_work_analysis_prompt_source()
+    custom_exists = custom_path.exists()
+
+    lines = [
+        "Work analysis prompt status",
+        "",
+        f"Current source: {source_name}",
+        f"Custom prompt path: {custom_path}",
+        f"Custom file exists: {'yes' if custom_exists else 'no'}",
+    ]
+
+    if custom_exists:
+        try:
+            stat = custom_path.stat()
+            modified_at = datetime.fromtimestamp(stat.st_mtime, APP_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
+            lines.extend([
+                f"Custom file size: {stat.st_size} bytes",
+                f"Custom file modified: {modified_at}",
+            ])
+        except Exception as e:
+            lines.append(f"Could not read custom file metadata: {e}")
+
+    if source_path and source_path != custom_path:
+        lines.append(f"Fallback source path: {source_path}")
+
+    lines.extend([
+        "",
+        "Чтобы обновить prompt, отправьте .txt файл с подписью /set_work_prompt.",
+    ])
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def reset_work_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
+
+    custom_path = resolve_work_analysis_prompt_path(WORK_ANALYSIS_PROMPT_PATH)
+    if not custom_path.exists():
+        await update.message.reply_text(
+            "Custom prompt уже отсутствует. Бот использует example/fallback prompt."
+        )
+        return
+
+    backup_path = get_prompt_backup_path(custom_path)
+    custom_path.rename(backup_path)
+
+    await update.message.reply_text(
+        "Custom prompt disabled/reset.\n"
+        f"Backup created: {backup_path}\n"
+        "Теперь бот будет использовать example/fallback prompt."
+    )
+
+
+async def handle_set_work_prompt_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    message = update.message
+    if not message or not message.caption:
+        return False
+
+    caption_command = message.caption.strip().split()[0]
+    if not caption_command.startswith("/set_work_prompt"):
+        return False
+
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return True
+
+    if not is_admin(update):
+        await message.reply_text("Эта команда доступна только администратору бота.")
+        return True
+
+    document = message.document
+    if not document:
+        await message.reply_text("Отправьте .txt файл с подписью /set_work_prompt.")
+        return True
+
+    file_name = document.file_name or ""
+    mime_type = document.mime_type or ""
+    is_text_file = file_name.lower().endswith(".txt") or mime_type == "text/plain"
+    if not is_text_file:
+        await message.reply_text("Prompt должен быть .txt файлом или MIME text/plain.")
+        return True
+
+    temp_path = Path("/tmp") / f"work_prompt_upload_{document.file_unique_id}.txt"
+
+    try:
+        telegram_file = await context.bot.get_file(document.file_id)
+        await telegram_file.download_to_drive(custom_path=temp_path)
+        prompt_text = temp_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        await message.reply_text("Не удалось прочитать файл как UTF-8. Сохраните prompt в UTF-8 и попробуйте снова.")
+        return True
+    except Exception as e:
+        logging.exception("Could not download work analysis prompt")
+        await message.reply_text(f"Не удалось загрузить prompt: {e}")
+        return True
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    missing_placeholders = [
+        placeholder
+        for placeholder in ("{chat_title}", "{period_label}")
+        if placeholder not in prompt_text
+    ]
+    if missing_placeholders:
+        await message.reply_text(
+            "Prompt не сохранён. В файле отсутствуют placeholders: "
+            + ", ".join(missing_placeholders)
+        )
+        return True
+
+    custom_path = resolve_work_analysis_prompt_path(WORK_ANALYSIS_PROMPT_PATH)
+    custom_path.parent.mkdir(parents=True, exist_ok=True)
+
+    backup_path = None
+    if custom_path.exists():
+        backup_path = get_prompt_backup_path(custom_path)
+        custom_path.rename(backup_path)
+
+    custom_path.write_text(prompt_text, encoding="utf-8")
+
+    response = [
+        "Prompt updated.",
+        f"Path: {custom_path}",
+        f"Size: {len(prompt_text.encode('utf-8'))} bytes",
+    ]
+    if backup_path:
+        response.append(f"Backup created: {backup_path}")
+
+    await message.reply_text("\n".join(response))
+    return True
 
 
 def get_private_admin_keyboard():
@@ -3021,6 +3090,14 @@ Legacy/manual: собрать пакет текущего чата за смен
 
 /storage_status
 Реальный размер базы, файлов, экспортов и data volume.
+
+/prompt_status
+Проверить, какой work analysis prompt используется.
+
+/reset_work_prompt
+Отключить custom prompt и вернуться к example/fallback prompt.
+
+Чтобы обновить prompt, отправьте .txt файл с подписью /set_work_prompt.
 
 /vacuum_db
 Сжать SQLite-базу после массовой очистки.
@@ -4577,6 +4654,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         return
 
+    if await handle_set_work_prompt_upload(update, context):
+        return
+
     if not await ensure_chat_approved(update, context):
         return
 
@@ -4630,6 +4710,8 @@ def main():
     app.add_handler(CommandHandler("version", version))
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("storage_status", storage_status))
+    app.add_handler(CommandHandler("prompt_status", prompt_status))
+    app.add_handler(CommandHandler("reset_work_prompt", reset_work_prompt))
     app.add_handler(CommandHandler("vacuum_db", vacuum_db))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("global_status", global_status))
