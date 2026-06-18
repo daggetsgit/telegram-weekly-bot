@@ -59,6 +59,7 @@ CONTACT_SHEET_IMAGES_PER_PAGE = int(os.getenv("CONTACT_SHEET_IMAGES_PER_PAGE", "
 CONTACT_SHEET_PAGE_WIDTH = int(os.getenv("CONTACT_SHEET_PAGE_WIDTH", "3000"))
 CONTACT_SHEET_THUMB_WIDTH = int(os.getenv("CONTACT_SHEET_THUMB_WIDTH", "1350"))
 CONTACT_SHEET_JPEG_QUALITY = int(os.getenv("CONTACT_SHEET_JPEG_QUALITY", "92"))
+CONTACT_SHEET_FONT_PATH = os.getenv("CONTACT_SHEET_FONT_PATH", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TRANSCRIBE_VOICE = os.getenv("TRANSCRIBE_VOICE", "false").strip().lower() in ("1", "true", "yes", "on")
 TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
@@ -1460,9 +1461,21 @@ def collect_transcript_files_for_period(since_dt, until_dt=None, chat_id=None):
 
 
 def load_contact_sheet_font(size: int):
+    if CONTACT_SHEET_FONT_PATH:
+        font_path = Path(CONTACT_SHEET_FONT_PATH)
+        if font_path.exists():
+            try:
+                return ImageFont.truetype(str(font_path), size)
+            except Exception as e:
+                logging.warning("Could not load CONTACT_SHEET_FONT_PATH %s: %s", font_path, e)
+        else:
+            logging.warning("CONTACT_SHEET_FONT_PATH is set but file does not exist: %s", font_path)
+
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
     ]
 
@@ -1472,7 +1485,72 @@ def load_contact_sheet_font(size: int):
         except Exception:
             pass
 
+    logging.warning(
+        "Could not find a Unicode TrueType font for contact sheets. "
+        "Falling back to ImageFont.load_default(); Cyrillic captions may not render correctly."
+    )
     return ImageFont.load_default()
+
+
+def truncate_contact_sheet_text(draw, text: str, font, max_width: int) -> str:
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+
+    suffix = "..."
+    low = 0
+    high = len(text)
+
+    while low < high:
+        mid = (low + high) // 2
+        candidate = text[:mid].rstrip() + suffix
+        if draw.textlength(candidate, font=font) <= max_width:
+            low = mid + 1
+        else:
+            high = mid
+
+    return text[:max(0, low - 1)].rstrip() + suffix
+
+
+def wrap_contact_sheet_text(draw, text: str, font, max_width: int, max_lines: int):
+    normalized = " ".join((text or "").split())
+    if not normalized or max_lines <= 0:
+        return []
+
+    words = normalized.split(" ")
+    lines = []
+    current = ""
+    index = 0
+
+    while index < len(words):
+        word = words[index]
+        candidate = f"{current} {word}".strip()
+
+        if draw.textlength(candidate, font=font) <= max_width:
+            current = candidate
+            index += 1
+            continue
+
+        if current:
+            lines.append(current)
+            current = ""
+        else:
+            lines.append(truncate_contact_sheet_text(draw, word, font, max_width))
+            index += 1
+
+        if len(lines) == max_lines:
+            remaining = " ".join(words[index:])
+            if remaining:
+                lines[-1] = truncate_contact_sheet_text(draw, f"{lines[-1]} {remaining}", font, max_width)
+            return lines
+
+    if current:
+        lines.append(current)
+
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = truncate_contact_sheet_text(draw, lines[-1], font, max_width)
+
+    return lines
 
 
 def create_contact_sheets(days: int = 7, chat_id=None, chat_title_for_filename=None, since_dt=None, until_dt=None, period_label=None):
@@ -1660,14 +1738,19 @@ def create_contact_sheets(days: int = 7, chat_id=None, chat_title_for_filename=N
             lines = [
                 f"Attachment image {global_index}",
                 f"{date_text} | {sender}",
-                f"{file_name}",
+                truncate_contact_sheet_text(draw, f"{file_name}", font_small, tile_width),
             ]
 
             if caption:
-                trimmed_caption = caption.replace("\n", " ")
-                if len(trimmed_caption) > 90:
-                    trimmed_caption = trimmed_caption[:87] + "..."
-                lines.append(f"Caption: {trimmed_caption}")
+                lines.extend(
+                    wrap_contact_sheet_text(
+                        draw,
+                        f"Caption: {caption}",
+                        font_small,
+                        tile_width,
+                        max_lines=3,
+                    )
+                )
 
             for line_index, line in enumerate(lines):
                 draw.text(
