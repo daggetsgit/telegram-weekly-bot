@@ -239,6 +239,7 @@ MAX_FILE_SIZE_MB=50
 MAX_TELEGRAM_SEND_SIZE_MB=49
 TELEGRAM_SEND_TIMEOUT_SECONDS=180
 APP_TIMEZONE=Asia/Bangkok
+REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
 BOT_VERSION=0.6.0
 BOT_BUILD_NAME=openai-voice-transcription
@@ -296,6 +297,8 @@ OPENAI_REPORTS_ENABLED=true
 ```
 
 When enabled, the private admin `/report_chats` flow shows an extra `📄 Краткий PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, adds image contact sheets when `OPENAI_REPORT_INCLUDE_IMAGES=true`, asks OpenAI for a compact 1–2 page report, renders it as PDF, and sends it to the admin in private chat.
+
+The report menu also includes “с прошлого понедельника”: this period starts at 09:00 on Monday of the previous calendar week and ends at the current moment in `REPORT_TIMEZONE`.
 
 The AI PDF report is still an MVP. It aims to keep the report concise without dropping important decisions, amounts, risks, and action items. The tasks section is rendered as a real PDF table with owner, deadline, and status columns when the model returns structured data.
 

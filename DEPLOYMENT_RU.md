@@ -116,6 +116,7 @@ MAX_FILE_SIZE_MB=50
 MAX_TELEGRAM_SEND_SIZE_MB=49
 TELEGRAM_SEND_TIMEOUT_SECONDS=180
 APP_TIMEZONE=Asia/Bangkok
+REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
 BOT_VERSION=0.6.0
 BOT_BUILD_NAME=openai-voice-transcription
@@ -226,6 +227,8 @@ OPENAI_REPORTS_ENABLED=true
 ```
 
 После включения в личном admin flow `/report_chats` появятся кнопки `📄 Краткий PDF` для выбранного чата и периода. Бот берёт `chat_export.md`, `attachments_index.md`, текущий work analysis prompt и, если `OPENAI_REPORT_INCLUDE_IMAGES=true`, image contact sheets за тот же период. Затем он просит OpenAI подготовить компактный отчёт на 1–2 страницы, рендерит PDF и отправляет его администратору в личку.
+
+Кнопка «с прошлого понедельника» строит пакет или AI PDF за период с 09:00 понедельника предыдущей календарной недели до текущего момента. Часовой пояс задаётся через `REPORT_TIMEZONE=Asia/Bangkok`; при некорректном значении бот использует `Asia/Bangkok` и пишет предупреждение в лог.
 
 Это всё ещё MVP. Отчёт должен быть кратким, но не должен терять важные решения, суммы, условия, риски и задачи. Раздел задач обязателен и при структурированном ответе модели рендерится настоящей PDF-таблицей с ответственным, сроком и статусом.
 

@@ -45,6 +45,14 @@ def get_float_env(name: str, default: float) -> float:
         return default
 
 
+def get_timezone_env(name: str, default: str):
+    value = os.getenv(name, default).strip() or default
+    try:
+        return ZoneInfo(value), None
+    except Exception:
+        return ZoneInfo(default), value
+
+
 ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS", "")
 ADMIN_USER_ID_PARTS = [x.strip() for x in ADMIN_USER_IDS_RAW.split(",") if x.strip()]
 ADMIN_USER_IDS = (
@@ -59,6 +67,7 @@ MAX_TELEGRAM_SEND_SIZE_MB = int(os.getenv("MAX_TELEGRAM_SEND_SIZE_MB", "49"))
 MAX_TELEGRAM_SEND_SIZE_BYTES = MAX_TELEGRAM_SEND_SIZE_MB * 1024 * 1024
 TELEGRAM_SEND_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_SEND_TIMEOUT_SECONDS", "180"))
 APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Bangkok"))
+REPORT_TIMEZONE, INVALID_REPORT_TIMEZONE = get_timezone_env("REPORT_TIMEZONE", "Asia/Bangkok")
 WORK_SHIFT_START_HOUR = int(os.getenv("WORK_SHIFT_START_HOUR", "9"))
 BOT_VERSION = os.getenv("BOT_VERSION", "0.5.0")
 BOT_BUILD_NAME = os.getenv("BOT_BUILD_NAME", "work-packages-private-control-contact-sheets")
@@ -112,6 +121,12 @@ if not ADMIN_USER_IDS:
     logging.warning(
         "ADMIN_USER_IDS is missing, empty, or invalid. "
         "All administrator-only actions are disabled."
+    )
+
+if INVALID_REPORT_TIMEZONE:
+    logging.warning(
+        "Invalid REPORT_TIMEZONE=%r. Falling back to Asia/Bangkok.",
+        INVALID_REPORT_TIMEZONE,
     )
 
 
@@ -2160,6 +2175,33 @@ def get_current_work_shift_interval():
     return since_utc, until_utc, period_label
 
 
+def get_previous_monday_report_interval(now_local=None):
+    now_local = now_local or datetime.now(REPORT_TIMEZONE)
+    if now_local.tzinfo is None:
+        now_local = now_local.replace(tzinfo=REPORT_TIMEZONE)
+    else:
+        now_local = now_local.astimezone(REPORT_TIMEZONE)
+
+    current_week_monday = now_local.date() - timedelta(days=now_local.weekday())
+    previous_monday = current_week_monday - timedelta(days=7)
+    since_local = datetime.combine(
+        previous_monday,
+        datetime.min.time().replace(hour=9),
+        tzinfo=REPORT_TIMEZONE,
+    )
+
+    timezone_name = getattr(REPORT_TIMEZONE, "key", str(REPORT_TIMEZONE))
+    period_label = (
+        f"{since_local.strftime('%d.%m.%Y %H:%M')} — "
+        f"{now_local.strftime('%d.%m.%Y %H:%M')} {timezone_name}"
+    )
+    return (
+        since_local.astimezone(timezone.utc),
+        now_local.astimezone(timezone.utc),
+        period_label,
+    )
+
+
 def export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=None, period_label=None):
     scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
     export_path = EXPORT_DIR / f"01_chat_export_{scope}_work_shift.md"
@@ -3942,6 +3984,8 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
 def get_ai_report_interval(mode: str):
     if mode == "shift":
         return get_current_work_shift_interval()
+    if mode == "prevweek":
+        return get_previous_monday_report_interval()
 
     until_dt = datetime.now(timezone.utc)
     since_dt = until_dt - timedelta(days=7)
@@ -3989,6 +4033,12 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
         chat_title_for_filename=source_chat_title,
         period_label=period_label,
     )
+    if mode == "prevweek" and _message_count == 0:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"За выбранный период в чате «{source_chat_title}» сообщений не найдено.\nПериод: {period_label}",
+        )
+        return
 
     attachments_index_path, _attachment_count = create_attachments_index(
         1,
@@ -5047,12 +5097,17 @@ def get_approved_chat_title(chat_id: int):
 
 
 async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, target_chat_id: int, source_chat_id: int, source_chat_title: str, mode: str):
-    if mode == "shift":
-        since_dt, until_dt, period_label = get_current_work_shift_interval()
+    if mode in ("shift", "prevweek"):
+        if mode == "shift":
+            since_dt, until_dt, period_label = get_current_work_shift_interval()
+            package_label = "за смену"
+        else:
+            since_dt, until_dt, period_label = get_previous_monday_report_interval()
+            package_label = "с прошлого понедельника"
 
         await context.bot.send_message(
             chat_id=target_chat_id,
-            text=f"Готовлю рабочий пакет за смену для чата: {source_chat_title}\nПериод: {period_label}",
+            text=f"Готовлю рабочий пакет {package_label} для чата: {source_chat_title}\nПериод: {period_label}",
         )
 
         prepare_transcripts_for_period(
@@ -5068,6 +5123,12 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             chat_title_for_filename=source_chat_title,
             period_label=period_label,
         )
+        if mode == "prevweek" and message_count == 0:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=f"За выбранный период в чате «{source_chat_title}» сообщений не найдено.\nПериод: {period_label}",
+            )
+            return
 
         attachments_index_path, attachment_count = create_attachments_index(
             1,
@@ -5098,8 +5159,6 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             chat_id=source_chat_id,
             chat_title_for_filename=source_chat_title,
         )
-
-        package_label = "за смену"
 
     else:
         await context.bot.send_message(
@@ -5278,12 +5337,18 @@ async def show_report_chats_selection(message, edit: bool = False):
                 InlineKeyboardButton("7 дней", callback_data=f"workpkg:week:{chat_id}"),
             ]
         )
+        keyboard.append(
+            [InlineKeyboardButton("📦 Пакет — с прошлого понедельника", callback_data=f"workpkg:prevweek:{chat_id}")]
+        )
         if OPENAI_REPORTS_ENABLED:
             keyboard.append(
                 [
                     InlineKeyboardButton("📄 Краткий PDF — смена", callback_data=f"workpdf:shift:{chat_id}"),
                     InlineKeyboardButton("📄 Краткий PDF — 7 дней", callback_data=f"workpdf:week:{chat_id}"),
                 ]
+            )
+            keyboard.append(
+                [InlineKeyboardButton("📄 PDF — с прошлого понедельника", callback_data=f"workpdf:prevweek:{chat_id}")]
             )
 
     await send_or_edit_admin_text(
@@ -5439,6 +5504,7 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     InlineKeyboardButton("Смена 09:00–сейчас", callback_data=f"workpkg:shift:{chat_id}"),
                     InlineKeyboardButton("7 дней", callback_data=f"workpkg:week:{chat_id}"),
                 ],
+                [InlineKeyboardButton("📦 Пакет — с прошлого понедельника", callback_data=f"workpkg:prevweek:{chat_id}")],
                 [InlineKeyboardButton("↩️ К списку чатов", callback_data="admin:approved")],
             ]),
         )
