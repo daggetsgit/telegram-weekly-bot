@@ -259,7 +259,7 @@ CONTACT_SHEET_JPEG_QUALITY=92
 Railway/Railpack font package for Cyrillic captions in image contact sheets:
 
 ```env
-RAILPACK_DEPLOY_APT_PACKAGES=fonts-dejavu-core
+RAILPACK_DEPLOY_APT_PACKAGES=fonts-dejavu-core fonts-noto-core
 ```
 
 OpenAI voice/audio transcription:
@@ -298,13 +298,24 @@ OPENAI_REPORTS_ENABLED=true
 
 When enabled, the private admin `/report_chats` flow shows an extra `📄 Краткий PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, adds image contact sheets when `OPENAI_REPORT_INCLUDE_IMAGES=true`, asks OpenAI for a compact 1–2 page report, renders it as PDF, and sends it to the admin in private chat.
 
-The report menu also includes “с прошлого понедельника”: this period starts at 09:00 on Monday of the previous calendar week and ends at the current moment in `REPORT_TIMEZONE`.
+The report menu also includes two preset periods:
+
+- “с прошлого понедельника” starts at 09:00 on Monday of the previous calendar week;
+- “с 1 числа” starts at 00:00 on the first day of the current month.
+
+Both periods end at the current moment in `REPORT_TIMEZONE`.
 
 The AI PDF report is still an MVP. It aims to keep the report concise without dropping important decisions, amounts, risks, and action items. The tasks section is rendered as a real PDF table with owner, deadline, and status columns when the model returns structured data.
+
+When future meetings or calls are explicitly scheduled in the source material, the AI PDF adds a separate final page called “Календарь ближайших встреч и созвонов”. Past events and unscheduled intentions such as “надо созвониться” are excluded. The calendar is generated for every AI PDF period when future events are found.
+
+Important `.txt`, `.md`, `.docx`, and `.pdf` meeting summaries, reports, and minutes are read as additional AI PDF sources when their text can be extracted. A document that cannot be read does not break report generation.
 
 Image contact sheets help the model read visible text in screenshots, such as prices, currencies, access errors, and partner messages. `OPENAI_REPORT_MAX_IMAGES` limits how many contact sheet pages are sent. Including images may slightly increase OpenAI API cost.
 
 `AI_REPORT_LOGO_PATH` can point to a PNG/JPEG logo used in the PDF header. If the file is missing or unreadable, the PDF is generated without a logo. The repository keeps the source SVG at `assets/bs_logo.svg`.
+
+AI PDF files use the Best Service document style: A4, restrained white layout, blue `#2A5177`, green `#91C651`, light table fills, and the configured logo.
 
 The report uses the same custom prompt system as work packages. To update the private style guide/prompt on Railway, send a `.txt` file to the bot with caption `/set_work_prompt`, then check `/prompt_status`.
 

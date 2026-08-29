@@ -6,6 +6,7 @@ import sqlite3
 import logging
 import shutil
 import zipfile
+from xml.etree import ElementTree
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -2202,6 +2203,32 @@ def get_previous_monday_report_interval(now_local=None):
     )
 
 
+def get_current_month_report_interval(now_local=None):
+    now_local = now_local or datetime.now(REPORT_TIMEZONE)
+    if now_local.tzinfo is None:
+        now_local = now_local.replace(tzinfo=REPORT_TIMEZONE)
+    else:
+        now_local = now_local.astimezone(REPORT_TIMEZONE)
+
+    since_local = now_local.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    timezone_name = getattr(REPORT_TIMEZONE, "key", str(REPORT_TIMEZONE))
+    period_label = (
+        f"{since_local.strftime('%d.%m.%Y %H:%M')} — "
+        f"{now_local.strftime('%d.%m.%Y %H:%M')} {timezone_name}"
+    )
+    return (
+        since_local.astimezone(timezone.utc),
+        now_local.astimezone(timezone.utc),
+        period_label,
+    )
+
+
 def export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=None, period_label=None):
     scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
     export_path = EXPORT_DIR / f"01_chat_export_{scope}_work_shift.md"
@@ -2976,6 +3003,121 @@ def build_openai_report_image_inputs(contact_sheet_paths):
     return image_inputs
 
 
+IMPORTANT_DOCUMENT_KEYWORDS = (
+    "отчёт",
+    "отчет",
+    "резюме",
+    "итоги встречи",
+    "планёрка",
+    "планерка",
+    "meeting summary",
+    "протокол",
+)
+
+
+def is_important_ai_report_document(file_name, caption, mime_type) -> bool:
+    suffix = Path(file_name or "").suffix.lower()
+    if suffix not in (".txt", ".md", ".docx", ".pdf"):
+        return False
+    searchable = " ".join(str(value or "").lower() for value in (file_name, caption, mime_type))
+    return any(keyword in searchable for keyword in IMPORTANT_DOCUMENT_KEYWORDS)
+
+
+def extract_docx_text_for_ai_report(path: Path) -> str:
+    with zipfile.ZipFile(path) as archive:
+        xml_data = archive.read("word/document.xml")
+    root = ElementTree.fromstring(xml_data)
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    paragraphs = []
+    for paragraph in root.iter(f"{namespace}p"):
+        text = "".join(node.text or "" for node in paragraph.iter(f"{namespace}t")).strip()
+        if text:
+            paragraphs.append(text)
+    return "\n".join(paragraphs)
+
+
+def extract_pdf_text_for_ai_report(path: Path) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(path))
+    return "\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
+
+
+def extract_important_document_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in (".txt", ".md"):
+        return path.read_text(encoding="utf-8")
+    if suffix == ".docx":
+        return extract_docx_text_for_ai_report(path)
+    if suffix == ".pdf":
+        return extract_pdf_text_for_ai_report(path)
+    return ""
+
+
+def collect_important_document_texts_for_period(since_dt, until_dt, chat_id: int) -> str:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT file_name, caption, file_mime_type, file_path
+        FROM messages
+        WHERE chat_id = ?
+          AND date_utc >= ?
+          AND date_utc < ?
+          AND message_type = 'document'
+          AND file_path IS NOT NULL
+          AND file_skipped = 0
+        ORDER BY date_utc ASC
+        """,
+        (chat_id, since_dt.isoformat(), until_dt.isoformat()),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    blocks = []
+    total_chars = 0
+    max_total_chars = 60000
+    max_document_chars = 20000
+
+    for file_name, caption, mime_type, file_path_value in rows:
+        if not is_important_ai_report_document(file_name, caption, mime_type):
+            continue
+
+        source_path = resolve_stored_file_path(file_path_value)
+        if not source_path:
+            logging.warning("Important document is unavailable for AI PDF: %s", file_name or "unnamed document")
+            continue
+
+        try:
+            document_text = extract_important_document_text(source_path).strip()
+        except Exception as e:
+            logging.warning(
+                "Important document could not be read for AI PDF: %s (%s)",
+                source_path.name,
+                type(e).__name__,
+            )
+            continue
+
+        if not document_text:
+            logging.warning("Important document has no extractable text for AI PDF: %s", source_path.name)
+            continue
+
+        document_text = document_text[:max_document_chars]
+        block = (
+            f"Документ: {file_name or source_path.name}\n"
+            f"Caption: {caption or 'не указан'}\n"
+            f"Содержимое:\n{document_text}"
+        )
+        remaining = max_total_chars - total_chars
+        if remaining <= 0:
+            break
+        block = block[:remaining]
+        blocks.append(block)
+        total_chars += len(block)
+
+    return "\n\n---\n\n".join(blocks)
+
+
 def parse_ai_report_json(report_text: str):
     expected_keys = {
         "summary",
@@ -2986,6 +3128,7 @@ def parse_ai_report_json(report_text: str):
         "providers_partners",
         "next_steps",
         "important_facts",
+        "upcoming_events",
     }
     text = (report_text or "").strip()
     if not text:
@@ -3022,6 +3165,7 @@ def parse_ai_analysis_json(report_text: str):
         "risks",
         "action_items",
         "possible_inconsistencies",
+        "upcoming_events",
     }
     text = (report_text or "").strip()
     if not text:
@@ -3107,7 +3251,96 @@ def compact_pdf_short_value(value: str) -> str:
     return compact_report_text(text, 70)
 
 
-def normalize_ai_report_data(report_data: dict) -> dict:
+def resolve_upcoming_event_timezone(value):
+    text = str(value or "").strip()
+    lowered = text.lower()
+    report_timezone_name = getattr(REPORT_TIMEZONE, "key", str(REPORT_TIMEZONE))
+
+    if not text or lowered == "не указано":
+        return None
+    if "локаль" in lowered or lowered == report_timezone_name.lower():
+        return REPORT_TIMEZONE
+    if "моск" in lowered or lowered == "europe/moscow":
+        return ZoneInfo("Europe/Moscow")
+    try:
+        return ZoneInfo(text)
+    except Exception:
+        return None
+
+
+def normalize_upcoming_events(items, now_local=None):
+    now_local = now_local or datetime.now(REPORT_TIMEZONE)
+    if now_local.tzinfo is None:
+        now_local = now_local.replace(tzinfo=REPORT_TIMEZONE)
+    else:
+        now_local = now_local.astimezone(REPORT_TIMEZONE)
+
+    events = []
+    seen = set()
+    allowed_statuses = {"подтверждено", "предварительно", "требует подтверждения"}
+
+    for item in report_list(items):
+        if not isinstance(item, dict):
+            continue
+
+        date_text = compact_report_text(item.get("date"), 10)
+        time_text = compact_report_text(item.get("time"), 20, "не указано") or "не указано"
+        try:
+            event_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+
+        event_time = None
+        if time_text != "не указано":
+            try:
+                event_time = datetime.strptime(time_text, "%H:%M").time()
+            except ValueError:
+                time_text = "не указано"
+
+        event_timezone = resolve_upcoming_event_timezone(item.get("timezone"))
+        comparison_now = now_local.astimezone(event_timezone) if event_timezone else now_local
+
+        if event_date < comparison_now.date():
+            continue
+        if event_date == comparison_now.date():
+            if event_time is None or event_time <= comparison_now.time().replace(tzinfo=None):
+                continue
+
+        title = compact_report_text(item.get("title"), 100)
+        party = compact_report_text(item.get("participants_or_party"), 100)
+        if not title:
+            continue
+
+        dedupe_key = normalize_report_dedupe_key(f"{date_text} {time_text} {title} {party}")
+        if not dedupe_key or dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        status = compact_report_text(item.get("status"), 40, "требует подтверждения")
+        if status not in allowed_statuses:
+            status = "требует подтверждения"
+
+        events.append({
+            "date": date_text,
+            "time": time_text,
+            "timezone": compact_report_text(item.get("timezone"), 60, "не указано"),
+            "title": title,
+            "participants_or_party": party,
+            "purpose": compact_report_text(item.get("purpose"), 180),
+            "owner": compact_report_text(item.get("owner"), 80, "не назначен"),
+            "source_context": compact_report_text(item.get("source_context"), 160),
+            "status": status,
+        })
+
+    events.sort(key=lambda item: (
+        item["date"],
+        item["time"] if item["time"] != "не указано" else "99:99",
+        item["title"].lower(),
+    ))
+    return events[:15]
+
+
+def normalize_ai_report_data(report_data: dict, report_now=None) -> dict:
     seen = set()
     normalized = {
         "summary": compact_string_list(report_data.get("summary"), 5, 180, seen),
@@ -3174,6 +3407,10 @@ def normalize_ai_report_data(report_data: dict) -> dict:
     normalized["risks_open_questions"] = compact_string_list(report_data.get("risks_open_questions"), 5, 180, seen)
     normalized["next_steps"] = compact_string_list(report_data.get("next_steps"), 5, 160, seen)
     normalized["important_facts"] = normalize_important_facts(report_data.get("important_facts"))
+    normalized["upcoming_events"] = normalize_upcoming_events(
+        report_data.get("upcoming_events"),
+        now_local=report_now,
+    )
     apply_important_facts_safety_net(normalized)
 
     return normalized
@@ -3256,7 +3493,17 @@ def create_openai_report_response(client, response_input):
         )
 
 
-def run_ai_report_analysis_pass(client, chat_title, period_label, prompt_text, chat_export_text, attachments_index_text, image_inputs):
+def run_ai_report_analysis_pass(
+    client,
+    chat_title,
+    period_label,
+    prompt_text,
+    chat_export_text,
+    attachments_index_text,
+    important_document_texts,
+    image_inputs,
+    report_generated_at,
+):
     system_prompt = """Ты выполняешь первый этап AI PDF pipeline: extract / analysis pass.
 
 Не пиши красивый отчёт. Верни только валидный JSON с рабочей аналитикой.
@@ -3264,6 +3511,10 @@ def run_ai_report_analysis_pass(client, chat_title, period_label, prompt_text, c
 Особенно внимательно извлекай видимые на изображениях цифры, ставки, валюты, статусы, ошибки доступа и условия. Не меняй цифры, считанные с изображений.
 Если есть сомнение в OCR/vision, ставь confidence=medium или low и needs_verification=true.
 Не создавай задачи без target_party и deliverable. Каждая задача должна отвечать: кто кому/у кого что делает и какой результат нужен.
+Извлекай upcoming_events только для встреч и созвонов, которые ещё не наступили относительно REPORT_GENERATED_AT.
+Не создавай событие из общего намерения созвониться без конкретной будущей даты или однозначного временного указания.
+Относительные даты вычисляй по timestamp соответствующего сообщения. Учитывай позднейшие отмены и переносы.
+Не придумывай время, timezone, участников или повестку. Уже прошедшие события не включай.
 Не логируй и не возвращай техническую кухню бота.
 """
 
@@ -3316,12 +3567,26 @@ def run_ai_report_analysis_pass(client, chat_title, period_label, prompt_text, c
       "why_it_matters": "почему это важно",
       "how_to_handle": "как обработать"
     }
+  ],
+  "upcoming_events": [
+    {
+      "date": "YYYY-MM-DD",
+      "time": "HH:MM или не указано",
+      "timezone": "Asia/Bangkok / Москва / локальное время / не указано",
+      "title": "короткое название встречи",
+      "participants_or_party": "с кем / какая компания",
+      "purpose": "о чём встреча / что нужно обсудить",
+      "owner": "кто участвует или организует, если явно понятно",
+      "source_context": "почему событие считается подтверждённым",
+      "status": "подтверждено|предварительно|требует подтверждения"
+    }
   ]
 }
 """
 
     user_input = f"""Чат: {chat_title}
 Период: {period_label}
+REPORT_GENERATED_AT: {report_generated_at}
 
 WORK_ANALYSIS_PROMPT:
 {prompt_text}
@@ -3331,6 +3596,9 @@ CHAT_EXPORT:
 
 ATTACHMENTS_INDEX:
 {attachments_index_text}
+
+IMPORTANT_DOCUMENT_TEXTS:
+{important_document_texts or 'Нет доступного текста важных документов.'}
 
 {analysis_schema}
 """
@@ -3360,19 +3628,21 @@ ATTACHMENTS_INDEX:
     return analysis_data
 
 
-def run_ai_report_final_pass(client, chat_title, period_label, prompt_text, analysis_data, output_format):
+def run_ai_report_final_pass(client, chat_title, period_label, prompt_text, analysis_data, output_format, report_generated_at):
     system_prompt = """Ты выполняешь второй этап AI PDF pipeline: final report pass.
 
 Сформируй финальный JSON для PDF только на основе ANALYSIS_JSON и правил WORK_ANALYSIS_PROMPT.
 Не придумывай новые факты, стороны, цифры, сроки или решения, которых нет в ANALYSIS_JSON.
 Не меняй значения из important_numbers. Если есть possible_inconsistencies, вынеси их в risks_open_questions.
 Tasks строй из action_items, сохраняя actor, target_party, deliverable и source_context.
+upcoming_events бери только из ANALYSIS_JSON: не добавляй новые события и не меняй date/time. Можно только компактно переформулировать title и purpose.
 Если actor неизвестен — owner должен быть “не назначен”. Если deadline неизвестен — deadline должен быть “не указан”.
 Верни только валидный JSON по OUTPUT_FORMAT, без Markdown и пояснений.
 """
 
     user_input = f"""Чат: {chat_title}
 Период: {period_label}
+REPORT_GENERATED_AT: {report_generated_at}
 
 WORK_ANALYSIS_PROMPT:
 {prompt_text}
@@ -3396,7 +3666,15 @@ ANALYSIS_JSON:
     return report_text, report_data
 
 
-def generate_ai_one_page_report(chat_title, period_label, chat_export_text, attachments_index_text, prompt_text, contact_sheet_paths=None):
+def generate_ai_one_page_report(
+    chat_title,
+    period_label,
+    chat_export_text,
+    attachments_index_text,
+    prompt_text,
+    contact_sheet_paths=None,
+    important_document_texts="",
+):
     if not OPENAI_REPORTS_ENABLED:
         raise RuntimeError("AI PDF-отчёты отключены. Установите OPENAI_REPORTS_ENABLED=true.")
 
@@ -3407,13 +3685,21 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
 
     max_chars = max(1000, OPENAI_REPORT_MAX_INPUT_CHARS)
     prompt_budget = min(30000, max_chars // 5)
-    remaining_budget = max_chars - prompt_budget
+    document_budget = min(60000, max_chars // 5) if important_document_texts else 0
+    remaining_budget = max_chars - prompt_budget - document_budget
     chat_budget = remaining_budget * 2 // 3
     attachments_budget = remaining_budget - chat_budget
 
     prompt_text = limit_report_input_text("prompt", prompt_text, prompt_budget)
     chat_export_text = limit_report_input_text("chat_export", chat_export_text, chat_budget)
     attachments_index_text = limit_report_input_text("attachments_index", attachments_index_text, attachments_budget)
+    important_document_texts = limit_report_input_text(
+        "important_documents",
+        important_document_texts,
+        document_budget,
+    ) if document_budget else ""
+    report_now = datetime.now(REPORT_TIMEZONE)
+    report_generated_at = report_now.isoformat(timespec="minutes")
 
     system_prompt = """Ты готовишь JSON-данные для краткого PDF-отчёта на русском языке.
 
@@ -3421,6 +3707,8 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
 Ты должен строго следовать WORK_ANALYSIS_PROMPT и применить его к CHAT_EXPORT и ATTACHMENTS_INDEX.
 Не игнорируй правила из WORK_ANALYSIS_PROMPT про изображения/скриншоты, voice/audio transcripts, summary встреч / AI-summary, провайдеров/партнёров, компактность и запрет технической “кухни”.
 Если к запросу приложены image contact sheets, анализируй их как изображения: извлекай видимый текст, суммы, ставки, валюты, статусы, ошибки доступа и сообщения внешних партнёров, связывая их с captions/context из ATTACHMENTS_INDEX и CHAT_EXPORT.
+IMPORTANT_DOCUMENT_TEXTS содержит извлечённый текст важных отчётов, протоколов и meeting summaries, если он технически доступен. Используй его как содержательный источник, а не как metadata вложения.
+upcoming_events формируй только для событий, которые ещё не наступили относительно REPORT_GENERATED_AT. Не включай общие фразы о намерении созвониться без конкретной будущей даты.
 Если есть конфликт между этой технической обвязкой и WORK_ANALYSIS_PROMPT, приоритет у WORK_ANALYSIS_PROMPT, кроме обязательного требования вернуть валидный JSON по OUTPUT_FORMAT.
 
 Не повторяй одну и ту же мысль в нескольких JSON-разделах:
@@ -3471,6 +3759,19 @@ def generate_ai_one_page_report(chat_title, period_label, chat_export_text, atta
       "source_type": "image / screenshot / voice / document / chat",
       "action": "какой вывод, риск или следующий шаг связан с фактом, до 140 символов"
     }
+  ],
+  "upcoming_events": [
+    {
+      "date": "YYYY-MM-DD",
+      "time": "HH:MM или не указано",
+      "timezone": "timezone из источника или не указано",
+      "title": "короткое название встречи",
+      "participants_or_party": "с кем / какая компания",
+      "purpose": "о чём встреча / что подготовить",
+      "owner": "участник или организатор, только если явно указан",
+      "source_context": "кратко, почему событие считается актуальным",
+      "status": "подтверждено|предварительно|требует подтверждения"
+    }
   ]
 }
 
@@ -3485,10 +3786,18 @@ important_facts нужен как safety net, чтобы факты из изо�
 - Если скриншот показывает ошибку доступа к платформе видеоконференции: fact “ссылка не пускала из-за недостаточного уровня доступа”; action “на будущие встречи нужен тест доступа и резервный канал связи”.
 Не используй примеры как факты. Не добавляй в отчёт компании, валюты, ставки, события или платформы из примеров, если они не присутствуют в конкретном chat_export, attachments_index, transcripts или image contact sheets.
 Если данных мало — не заполняй искусственно. Если данных много — выбери главное.
+Для upcoming_events:
+- включай только будущие события относительно REPORT_GENERATED_AT;
+- конкретная дата без времени допустима с time="не указано";
+- относительную дату вычисляй только однозначно по timestamp сообщения;
+- позднейшая отмена или перенос заменяет прежнюю информацию;
+- не создавай событие из фраз “надо созвониться”, “давайте встретимся”, “поговорим потом” без даты;
+- не придумывай участников, время, timezone или повестку.
 """
 
     user_input = f"""Чат: {chat_title}
 Период: {period_label}
+REPORT_GENERATED_AT: {report_generated_at}
 
 WORK_ANALYSIS_PROMPT:
 {prompt_text}
@@ -3498,6 +3807,9 @@ CHAT_EXPORT:
 
 ATTACHMENTS_INDEX:
 {attachments_index_text}
+
+IMPORTANT_DOCUMENT_TEXTS:
+{important_document_texts or 'Нет доступного текста важных документов.'}
 
 {output_format}
 """
@@ -3518,7 +3830,9 @@ ATTACHMENTS_INDEX:
                 prompt_text,
                 chat_export_text,
                 attachments_index_text,
+                important_document_texts,
                 image_inputs,
+                report_generated_at,
             )
             report_text, report_data = run_ai_report_final_pass(
                 client,
@@ -3527,8 +3841,10 @@ ATTACHMENTS_INDEX:
                 prompt_text,
                 analysis_data,
                 output_format,
+                report_generated_at,
             )
-            return report_text, normalize_ai_report_data(report_data)
+            report_data["upcoming_events"] = analysis_data.get("upcoming_events", [])
+            return report_text, normalize_ai_report_data(report_data, report_now=report_now)
         except Exception:
             logging.exception("Two-pass AI PDF report failed; retrying single-pass report.")
 
@@ -3557,7 +3873,7 @@ ATTACHMENTS_INDEX:
 
     report_data = parse_ai_report_json(report_text)
     if report_data is not None:
-        report_data = normalize_ai_report_data(report_data)
+        report_data = normalize_ai_report_data(report_data, report_now=report_now)
 
     return report_text, report_data
 
@@ -3573,9 +3889,10 @@ def get_report_pdf_font_name() -> str:
     if CONTACT_SHEET_FONT_PATH:
         candidates.append(CONTACT_SHEET_FONT_PATH)
     candidates.extend([
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/Library/Fonts/NotoSans-Regular.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
     ])
 
@@ -3591,6 +3908,33 @@ def get_report_pdf_font_name() -> str:
 
     logging.warning("Could not find Unicode TTF font for PDF report. Falling back to Helvetica.")
     return "Helvetica"
+
+
+def get_report_pdf_display_font_name(body_font_name: str) -> str:
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except Exception:
+        return body_font_name
+
+    candidates = [
+        "/usr/share/fonts/truetype/unbounded/Unbounded-Bold.ttf",
+        "/usr/share/fonts/opentype/unbounded/Unbounded-Bold.ttf",
+        "/Library/Fonts/Unbounded-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/Library/Fonts/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for candidate in candidates:
+        path = Path(candidate)
+        if not path.exists():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont("ReportDisplay", str(path)))
+            return "ReportDisplay"
+        except Exception as e:
+            logging.warning("Could not load PDF display font %s: %s", path, e)
+    return body_font_name
 
 
 def resolve_ai_report_logo_path() -> Path:
@@ -3639,7 +3983,7 @@ def report_line_to_flowable(line: str, styles, font_name: str):
         return Paragraph(f"<b>{escape(stripped)}</b>", styles["ReportHeading"])
 
     if stripped.startswith(("- ", "* ", "• ")):
-        return Paragraph(f'<font color="#75A63C">•</font> {escape(stripped[2:].strip())}', styles["ReportBody"])
+        return Paragraph(f'<font color="#91C651">•</font> {escape(stripped[2:].strip())}', styles["ReportBody"])
 
     return Paragraph(escape(stripped), styles["ReportBody"])
 
@@ -3668,8 +4012,9 @@ def add_markdownish_report_text(story, report_text: str, styles, font_name: str,
             column_count = max(1, len(table_rows[0]))
             table = Table(table_rows, colWidths=[available_width / column_count] * column_count, repeatRows=1)
             table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cccccc")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7EEF2")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2A5177")),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C4CA")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 3),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 3),
@@ -3717,7 +4062,7 @@ def add_report_bullets(story, title: str, items, styles):
 
     add_report_heading(story, title, styles)
     for item in items:
-        story.append(Paragraph(f'<font color="#75A63C">•</font> {escape(report_text_value(item))}', styles["ReportBody"]))
+        story.append(Paragraph(f'<font color="#91C651">•</font> {escape(report_text_value(item))}', styles["ReportBody"]))
 
 
 def add_key_topics(story, topics, styles):
@@ -3736,9 +4081,9 @@ def add_key_topics(story, topics, styles):
             if title and text:
                 story.append(Paragraph(f"<b>{escape(title)}.</b> {escape(text)}", styles["ReportBody"]))
             elif title or text:
-                story.append(Paragraph(f'<font color="#75A63C">•</font> {escape(title or text)}', styles["ReportBody"]))
+                story.append(Paragraph(f'<font color="#91C651">•</font> {escape(title or text)}', styles["ReportBody"]))
         else:
-            story.append(Paragraph(f'<font color="#75A63C">•</font> {escape(report_text_value(topic))}', styles["ReportBody"]))
+            story.append(Paragraph(f'<font color="#91C651">•</font> {escape(report_text_value(topic))}', styles["ReportBody"]))
 
 
 def add_tasks_table(story, tasks, styles, available_width: float):
@@ -3786,9 +4131,9 @@ def add_tasks_table(story, tasks, styles, available_width: float):
         repeatRows=1,
     )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4ea")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#224870")),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7e1d1")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7EEF2")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2A5177")),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C4CA")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
@@ -3833,9 +4178,9 @@ def add_providers_table(story, providers, styles, available_width: float):
         repeatRows=1,
     )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef4ea")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#224870")),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7e1d1")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7EEF2")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2A5177")),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C4CA")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
@@ -3860,24 +4205,138 @@ def add_structured_report_text(story, report_data: dict, styles, available_width
     add_report_bullets(story, "Следующие шаги", report_data.get("next_steps"), styles)
 
 
+def build_ai_report_header(title, chat_title, period_label, styles, available_width):
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    from xml.sax.saxutils import escape
+
+    meta_font = styles["ReportMeta"].fontName
+    header_text = Paragraph(
+        f"{escape(title)}<br/>"
+        f'<font name="{meta_font}" size="7.6" color="#626E7A">'
+        f"Чат: {escape(str(chat_title))}<br/>"
+        f"Период: {escape(str(period_label))}<br/>"
+        f"Дата подготовки: {datetime.now(REPORT_TIMEZONE).strftime('%d.%m.%Y %H:%M')}"
+        "</font>",
+        styles["ReportTitle"],
+    )
+    logo = get_ai_report_logo_flowable(29 * mm, 10 * mm)
+    if logo:
+        header_table = Table(
+            [[logo, header_text]],
+            colWidths=[33 * mm, available_width - 33 * mm],
+        )
+    else:
+        header_table = Table([[header_text]], colWidths=[available_width])
+
+    header_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#B8C4CA")),
+    ]))
+    return header_table
+
+
+def add_upcoming_events_calendar(story, events, chat_title, period_label, styles, available_width):
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import PageBreak, Paragraph, Spacer, Table, TableStyle
+    from xml.sax.saxutils import escape
+
+    rows = [event for event in report_list(events, 15) if isinstance(event, dict)]
+    if not rows:
+        return False
+
+    story.append(PageBreak())
+    story.append(build_ai_report_header(
+        "Календарь",
+        chat_title,
+        period_label,
+        styles,
+        available_width,
+    ))
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("Календарь ближайших встреч и созвонов", styles["CalendarTitle"]))
+    story.append(Spacer(1, 2 * mm))
+
+    table_rows = [[
+        Paragraph("<b>Дата / время</b>", styles["TableHeader"]),
+        Paragraph("<b>Встреча</b>", styles["TableHeader"]),
+        Paragraph("<b>С кем</b>", styles["TableHeader"]),
+        Paragraph("<b>Цель / что подготовить</b>", styles["TableHeader"]),
+        Paragraph("<b>Статус</b>", styles["TableHeader"]),
+    ]]
+
+    for event in rows:
+        date_time = escape(report_text_value(event.get("date"), "не указано"))
+        event_time = report_text_value(event.get("time"), "не указано")
+        event_timezone = report_text_value(event.get("timezone"), "не указано")
+        if event_time != "не указано":
+            date_time += f"<br/><b>{escape(event_time)}</b>"
+        if event_timezone != "не указано":
+            date_time += f'<br/><font size="6.5" color="#626E7A">{escape(event_timezone)}</font>'
+
+        purpose = escape(report_text_value(event.get("purpose"), "не указано"))
+        owner = report_text_value(event.get("owner"), "не назначен")
+        if owner and owner != "не назначен":
+            purpose += f'<br/><font size="6.5" color="#626E7A">Участник/организатор: {escape(owner)}</font>'
+
+        table_rows.append([
+            Paragraph(date_time, styles["TableCell"]),
+            Paragraph(escape(report_text_value(event.get("title"), "Встреча")), styles["TableCell"]),
+            Paragraph(escape(report_text_value(event.get("participants_or_party"), "не указано")), styles["TableCell"]),
+            Paragraph(purpose, styles["TableCell"]),
+            Paragraph(escape(report_text_value(event.get("status"), "требует подтверждения")), styles["TableCell"]),
+        ])
+
+    table = Table(
+        table_rows,
+        colWidths=[
+            available_width * 0.14,
+            available_width * 0.20,
+            available_width * 0.17,
+            available_width * 0.34,
+            available_width * 0.15,
+        ],
+        repeatRows=1,
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7EEF2")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2A5177")),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C4CA")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(table)
+    return True
+
+
 def render_one_page_report_pdf(report_text, chat_title, period_label, output_path, report_data=None):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from xml.sax.saxutils import escape
+    from reportlab.platypus import SimpleDocTemplate, Spacer
 
     font_name = get_report_pdf_font_name()
+    display_font_name = get_report_pdf_display_font_name(font_name)
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(
         name="ReportTitle",
         parent=styles["Title"],
-        fontName=font_name,
+        fontName=display_font_name,
         fontSize=13,
         leading=14.5,
+        alignment=0,
         spaceAfter=1,
-        textColor="#224870",
+        textColor="#2A5177",
     ))
     styles.add(ParagraphStyle(
         name="ReportMeta",
@@ -3885,18 +4344,27 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         fontName=font_name,
         fontSize=7.6,
         leading=8.8,
-        textColor="#555555",
+        textColor="#626E7A",
         spaceAfter=1,
     ))
     styles.add(ParagraphStyle(
         name="ReportHeading",
         parent=styles["Heading2"],
-        fontName=font_name,
+        fontName=display_font_name,
         fontSize=9.2,
         leading=10.5,
         spaceBefore=3,
         spaceAfter=1,
-        textColor="#224870",
+        textColor="#2A5177",
+    ))
+    styles.add(ParagraphStyle(
+        name="CalendarTitle",
+        parent=styles["Heading1"],
+        fontName=display_font_name,
+        fontSize=11,
+        leading=13,
+        spaceAfter=2,
+        textColor="#2A5177",
     ))
     styles.add(ParagraphStyle(
         name="ReportBody",
@@ -3905,6 +4373,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         fontSize=8,
         leading=9.2,
         spaceAfter=1,
+        textColor="#292F36",
     ))
     styles.add(ParagraphStyle(
         name="TableCell",
@@ -3912,6 +4381,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         fontName=font_name,
         fontSize=7.5,
         leading=8.4,
+        textColor="#292F36",
     ))
     styles.add(ParagraphStyle(
         name="TableHeader",
@@ -3919,7 +4389,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         fontName=font_name,
         fontSize=7.5,
         leading=8.4,
-        textColor="#1f2937",
+        textColor="#2A5177",
     ))
 
     output_path = Path(output_path)
@@ -3930,48 +4400,36 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         pagesize=A4,
         leftMargin=12 * mm,
         rightMargin=12 * mm,
-        topMargin=9 * mm,
-        bottomMargin=11 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
         title=f"AI PDF report — {chat_title}",
     )
 
-    header_text = [
-        Paragraph("Краткий рабочий отчёт", styles["ReportTitle"]),
-        Paragraph(
-            f"Чат: {escape(str(chat_title))}<br/>"
-            f"Период: {escape(str(period_label))}<br/>"
-            f"Дата подготовки: {datetime.now(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M')}",
-            styles["ReportMeta"],
-        ),
+    story = [
+        build_ai_report_header("Краткий рабочий отчёт", chat_title, period_label, styles, doc.width),
+        Spacer(1, 3),
     ]
-    logo = get_ai_report_logo_flowable(34 * mm, 10 * mm)
-    if logo:
-        header_table = Table(
-            [[logo, header_text]],
-            colWidths=[37 * mm, doc.width - 37 * mm],
-        )
-    else:
-        header_table = Table([[header_text]], colWidths=[doc.width])
-    header_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.8, colors.HexColor("#224870")),
-    ]))
-
-    story = [header_table, Spacer(1, 3)]
 
     if isinstance(report_data, dict):
         add_structured_report_text(story, report_data, styles, doc.width)
+        add_upcoming_events_calendar(
+            story,
+            report_data.get("upcoming_events"),
+            chat_title,
+            period_label,
+            styles,
+            doc.width,
+        )
     else:
         add_markdownish_report_text(story, report_text, styles, font_name, doc.width)
 
     def draw_footer(canvas, doc_obj):
         canvas.saveState()
         canvas.setFont(font_name, 7)
-        canvas.setFillColor(colors.HexColor("#777777"))
+        canvas.setStrokeColor(colors.HexColor("#B8C4CA"))
+        canvas.setLineWidth(0.5)
+        canvas.line(doc_obj.leftMargin, 10 * mm, A4[0] - doc_obj.rightMargin, 10 * mm)
+        canvas.setFillColor(colors.HexColor("#626E7A"))
         footer = "Подготовлено на основе рабочего пакета Telegram"
         canvas.drawString(doc_obj.leftMargin, 7 * mm, footer)
         canvas.drawRightString(A4[0] - doc_obj.rightMargin, 7 * mm, f"· Стр. {doc_obj.page}")
@@ -3986,6 +4444,8 @@ def get_ai_report_interval(mode: str):
         return get_current_work_shift_interval()
     if mode == "prevweek":
         return get_previous_monday_report_interval()
+    if mode == "month":
+        return get_current_month_report_interval()
 
     until_dt = datetime.now(timezone.utc)
     since_dt = until_dt - timedelta(days=7)
@@ -4033,7 +4493,7 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
         chat_title_for_filename=source_chat_title,
         period_label=period_label,
     )
-    if mode == "prevweek" and _message_count == 0:
+    if mode in ("prevweek", "month") and _message_count == 0:
         await context.bot.send_message(
             chat_id=target_chat_id,
             text=f"За выбранный период в чате «{source_chat_title}» сообщений не найдено.\nПериод: {period_label}",
@@ -4061,6 +4521,11 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
     prompt_text = get_chatgpt_work_prompt(source_chat_title, 1, period_label)
     chat_export_text = export_path.read_text(encoding="utf-8")
     attachments_index_text = attachments_index_path.read_text(encoding="utf-8")
+    important_document_texts = collect_important_document_texts_for_period(
+        since_dt,
+        until_dt,
+        source_chat_id,
+    )
 
     report_text, report_data = generate_ai_one_page_report(
         source_chat_title,
@@ -4069,6 +4534,7 @@ async def send_ai_pdf_report_for_source_chat(context: ContextTypes.DEFAULT_TYPE,
         attachments_index_text,
         prompt_text,
         contact_sheet_paths=contact_sheet_paths,
+        important_document_texts=important_document_texts,
     )
 
     pdf_path = create_ai_pdf_output_path(source_chat_title, mode)
@@ -5097,13 +5563,16 @@ def get_approved_chat_title(chat_id: int):
 
 
 async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, target_chat_id: int, source_chat_id: int, source_chat_title: str, mode: str):
-    if mode in ("shift", "prevweek"):
+    if mode in ("shift", "prevweek", "month"):
         if mode == "shift":
             since_dt, until_dt, period_label = get_current_work_shift_interval()
             package_label = "за смену"
-        else:
+        elif mode == "prevweek":
             since_dt, until_dt, period_label = get_previous_monday_report_interval()
             package_label = "с прошлого понедельника"
+        else:
+            since_dt, until_dt, period_label = get_current_month_report_interval()
+            package_label = "с 1 числа"
 
         await context.bot.send_message(
             chat_id=target_chat_id,
@@ -5123,7 +5592,7 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             chat_title_for_filename=source_chat_title,
             period_label=period_label,
         )
-        if mode == "prevweek" and message_count == 0:
+        if mode in ("prevweek", "month") and message_count == 0:
             await context.bot.send_message(
                 chat_id=target_chat_id,
                 text=f"За выбранный период в чате «{source_chat_title}» сообщений не найдено.\nПериод: {period_label}",
@@ -5340,6 +5809,9 @@ async def show_report_chats_selection(message, edit: bool = False):
         keyboard.append(
             [InlineKeyboardButton("📦 Пакет — с прошлого понедельника", callback_data=f"workpkg:prevweek:{chat_id}")]
         )
+        keyboard.append(
+            [InlineKeyboardButton("📦 Пакет — с 1 числа", callback_data=f"workpkg:month:{chat_id}")]
+        )
         if OPENAI_REPORTS_ENABLED:
             keyboard.append(
                 [
@@ -5349,6 +5821,9 @@ async def show_report_chats_selection(message, edit: bool = False):
             )
             keyboard.append(
                 [InlineKeyboardButton("📄 PDF — с прошлого понедельника", callback_data=f"workpdf:prevweek:{chat_id}")]
+            )
+            keyboard.append(
+                [InlineKeyboardButton("📄 PDF — с 1 числа", callback_data=f"workpdf:month:{chat_id}")]
             )
 
     await send_or_edit_admin_text(
@@ -5505,6 +5980,7 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     InlineKeyboardButton("7 дней", callback_data=f"workpkg:week:{chat_id}"),
                 ],
                 [InlineKeyboardButton("📦 Пакет — с прошлого понедельника", callback_data=f"workpkg:prevweek:{chat_id}")],
+                [InlineKeyboardButton("📦 Пакет — с 1 числа", callback_data=f"workpkg:month:{chat_id}")],
                 [InlineKeyboardButton("↩️ К списку чатов", callback_data="admin:approved")],
             ]),
         )
