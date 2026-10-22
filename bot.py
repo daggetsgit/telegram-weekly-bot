@@ -6750,6 +6750,10 @@ async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if not data.startswith("workpdf:"):
             return
 
+    if not query.message or query.message.chat.type != "private":
+        await query.answer("Рабочие пакеты и AI PDF доступны только в личном чате с ботом.", show_alert=True)
+        return
+
     await query.answer()
 
     try:
@@ -6769,9 +6773,6 @@ async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         if data.startswith("workpdf:"):
-            if query.message.chat.type != "private":
-                await query.answer("AI PDF-отчёты доступны только в личном чате с ботом.", show_alert=True)
-                return
             await send_ai_pdf_report_for_source_chat(
                 context,
                 query.message.chat_id,
