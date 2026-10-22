@@ -118,7 +118,7 @@ class AdminCallbackSafetyTests(unittest.TestCase):
             text="Другой AI PDF уже готовится. Дождитесь его завершения.",
         )
 
-    def test_control_center_button_is_shown_when_ai_reports_are_enabled(self):
+    def test_private_dashboard_uses_individual_reports_not_control_center(self):
         with patch.object(bot, "OPENAI_REPORTS_ENABLED", True):
             keyboard = bot.get_private_admin_inline_keyboard()
 
@@ -127,8 +127,8 @@ class AdminCallbackSafetyTests(unittest.TestCase):
             for row in keyboard.inline_keyboard
             for button in row
         ]
-        self.assertIn("admin:control", callback_data)
-        self.assertIn("admin:control_latest", callback_data)
+        self.assertNotIn("admin:control", callback_data)
+        self.assertNotIn("admin:control_latest", callback_data)
         self.assertIn("admin:weekly_status", callback_data)
         self.assertIn("admin:ask", callback_data)
 
@@ -150,18 +150,19 @@ class AdminCallbackSafetyTests(unittest.TestCase):
         self.assertIn("Готов к запуску: да", rendered_text)
         self.assertIn("Модель анализа:", rendered_text)
 
-    def test_control_center_callback_schedules_private_admin_report(self):
+    def test_old_control_center_callback_opens_individual_chats(self):
         update, query = make_callback_update("admin:control:week")
         context = SimpleNamespace()
 
         with (
             patch.object(bot, "ADMIN_USER_IDS", {1}),
             patch.object(bot, "schedule_control_center_report") as schedule,
+            patch.object(bot, "show_report_chats_selection", AsyncMock()) as show,
         ):
             asyncio.run(bot.admin_menu_callback(update, context))
 
-        schedule.assert_called_once_with(context, update, 100, "week")
-        query.message.edit_text.assert_awaited_once()
+        schedule.assert_not_called()
+        show.assert_awaited_once_with(query.message, edit=True)
 
     def test_archive_question_input_schedules_background_answer(self):
         scheduled = []

@@ -265,8 +265,8 @@ TELEGRAM_SEND_TIMEOUT_SECONDS=180
 APP_TIMEZONE=Asia/Bangkok
 REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
-BOT_VERSION=0.10.0
-BOT_BUILD_NAME=control-center-weekly-reports
+BOT_VERSION=0.10.1
+BOT_BUILD_NAME=per-chat-weekly-reports
 BOT_BUILD_DATE=2026-10-23
 WORK_ANALYSIS_PROMPT_PATH=data/config/work_analysis_prompt.txt
 ```
@@ -326,13 +326,11 @@ OPENAI_REPORTS_ENABLED=true
 
 When enabled, the private admin `/report_chats` flow shows an extra `📄 Краткий PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, adds image contact sheets when `OPENAI_REPORT_INCLUDE_IMAGES=true`, asks OpenAI for a compact 1–2 page report, renders it as PDF, and sends it to the admin in private chat.
 
-The private admin dashboard also shows `🔥 Контрольный центр`. It creates one Best Service PDF across all approved work chats for the last 7 days, from the previous Monday, or from the start of the current month. The report prioritizes concrete action items, missing owners, external dependencies, blockers, important numbers, and upcoming meetings. AI PDF generation runs in the background, so the bot can keep accepting commands; duplicate requests for the same report are rejected while it is running.
-
-After a successful control-center report, `📋 Последние задачи` opens its cached tasks and risks directly in Telegram without another OpenAI call. This cache lives in the Railway volume and is included in `/backup_database`.
+Reports are generated separately for each work chat. AI PDF generation runs in the background, so the bot can keep accepting commands. The dashboard does not offer an aggregated cross-chat report.
 
 `🔎 Спросить архив` lets an administrator choose an approved chat and period, then ask a plain-text question. The answer uses saved messages, transcripts, important document text, and contact sheets; it cites Telegram message IDs when they are present in the source.
 
-With `WEEKLY_AUTO_REPORT_ENABLED=true`, the bot automatically creates the cross-chat control report every Friday at `WEEKLY_AUTO_REPORT_HOUR:WEEKLY_AUTO_REPORT_MINUTE` in `REPORT_TIMEZONE` and sends it to all configured administrators. The first report starts from the previous Friday; later reports start from the last successfully covered boundary. Failed attempts are rate-limited by `WEEKLY_AUTO_REPORT_RETRY_MINUTES` so a temporary Telegram or OpenAI outage cannot trigger a costly retry loop. Use `/weekly_report_status` to verify the schedule and last successful run.
+With `WEEKLY_AUTO_REPORT_ENABLED=true`, the bot generates a separate PDF for each approved work chat every Friday at `WEEKLY_AUTO_REPORT_HOUR:WEEKLY_AUTO_REPORT_MINUTE` in `REPORT_TIMEZONE`. PDFs are sent only to administrators in private chats; no weekly reports are posted to work groups and no aggregate PDF is generated. Each chat has its own successfully covered boundary, starting from the previous Friday for its first report. A pending PDF is reused after delivery errors, and administrators who already received it are not sent it again. Retries are rate-limited by `WEEKLY_AUTO_REPORT_RETRY_MINUTES`. An empty chat gets a brief no-activity notice instead of an artificial report. Use `/weekly_report_status` or `🗓 Пятничный отчёт` to verify the schedule.
 
 The same private flow also provides `👤 Задачи участника`: choose a saved chat participant and a period (7 days, current month, or all saved history). The report uses the normal work analysis prompt and AI pipeline, but focuses on tasks assigned to that person, their expected deliverables, deadlines, status, and source context. “All history” means all rows currently retained in SQLite; it cannot restore data deleted before message history retention was disabled.
 
@@ -355,11 +353,21 @@ Image contact sheets help the model read visible text in screenshots, such as pr
 
 `AI_REPORT_LOGO_PATH` can point to a PNG/JPEG logo used in the PDF header. If the file is missing or unreadable, the PDF is generated without a logo. The repository keeps the source SVG at `assets/bs_logo.svg`.
 
-AI PDF files use the Best Service document style: A4, restrained white layout, blue `#2A5177`, green `#91C651`, light table fills, and the configured logo.
+AI PDF files use the Best Service document style: A4, a prominent proportional logo, blue `#2A5177`, green `#91C651`, two-column topic cards, a separate facts-and-terms block, and light task tables. Noto Sans is preferred; available system fonts provide a fallback.
 
 The report uses the same custom prompt system as work packages. To update the private style guide/prompt on Railway, send a `.txt` file to the bot with caption `/set_work_prompt`, then check `/prompt_status`.
 
 If the feature is disabled or `OPENAI_API_KEY` is missing, the bot shows a clear error and does not affect the existing work package flow.
+
+### Private External Work Context
+
+AI PDFs can use a curated, private context snapshot from other work discussions and verified correspondence. Set `WORK_REPORT_CONTEXT_PATH` (default `data/config/work_report_context.json`). The neutral format example is `prompts/work_report_context.example.json`.
+
+Each fact needs explicit `chat_ids` or `chat_titles`, a timezone-aware `as_of`, `source`, `evidence`, and `status`: `confirmed`, `prepared`, `sent`, `completed`, `pending`, `reported`, or `needs_confirmation`. Only matching chats receive the fact; facts newer than the report boundary or past `valid_until` are excluded. A prepared draft is not treated as a sent message or signed agreement. Unverified information remains qualified.
+
+The snapshot is supplied as a separate data block in both analysis passes and single-pass fallback, without replacing the work analysis prompt. Complete records fit within a bounded input budget; oversized context is not cut in the middle of a record. Missing or invalid context does not break reports. Snapshots older than eight days are marked stale for the model.
+
+Store the private file on Railway Volume at `/app/data/config/work_report_context.json`, never in Git. **This MVP reads an explicitly maintained snapshot; it does not automatically access or synchronize ChatGPT/Codex projects, Gmail, or every conversation.** Review and refresh it before the Friday report. Context is sent to OpenAI with the report; do not include unrelated personal information, credentials, or unnecessary sensitive details.
 
 ## Custom Work Analysis Prompt
 
@@ -419,8 +427,8 @@ The private dashboard button `🗓 Пятничный отчёт` shows report r
 ## Current version
 
 ```text
-Version: 0.10.0
-Build: control-center-weekly-reports
+Version: 0.10.1
+Build: per-chat-weekly-reports
 Build date: 2026-10-23
 ```
 
@@ -441,9 +449,9 @@ Available features (OpenAI reports and automatic delivery require configuration)
 - Best Service AI PDF reports with task tables and image input
 - two-pass analysis and final report generation
 - participant task reports and future meeting calendar
-- cross-chat control center and cached latest tasks
+- individual work-chat reports
 - questions to the saved chat archive
-- automatic Friday PDF delivery with retry cooldown
+- automatic Friday PDF per chat to private admins, with saved delivery progress
 - private weekly report status button
 - metadata backup and persistent message history
 - cleanup / purge commands

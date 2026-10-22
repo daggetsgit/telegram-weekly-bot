@@ -126,7 +126,7 @@ class ReportPeriodTests(unittest.TestCase):
                 return_value=(scheduled_at, since_utc, until_utc, "weekly period"),
             ),
             patch.object(bot, "load_weekly_auto_report_state", return_value=state),
-            patch.object(bot, "build_control_center_report_artifact") as build,
+            patch.object(bot, "build_ai_pdf_report_artifact") as build,
             patch.object(bot, "save_weekly_auto_report_state") as save_state,
         ):
             sent = asyncio.run(bot.run_weekly_auto_report_if_due(app, now_local=now_local))
@@ -146,6 +146,7 @@ class ReportPeriodTests(unittest.TestCase):
             patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
             patch.object(bot, "OPENAI_API_KEY", "test-key"),
             patch.object(bot, "ADMIN_USER_IDS", {100}),
+            patch.object(bot, "get_approved_report_chats", return_value=[{"chat_id": -1, "title": "Развитие"}]),
             patch.object(bot, "_ACTIVE_AI_REPORTS", set()),
             patch.object(bot, "_ACTIVE_ARCHIVE_QUESTIONS", set()),
             patch.object(
@@ -155,7 +156,7 @@ class ReportPeriodTests(unittest.TestCase):
             ),
             patch.object(
                 bot,
-                "build_control_center_report_artifact",
+                "build_ai_pdf_report_artifact",
                 return_value={
                     "message_count": 12,
                     "pdf_path": Path("report.pdf"),
@@ -185,9 +186,10 @@ class ReportPeriodTests(unittest.TestCase):
                 patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
                 patch.object(bot, "OPENAI_API_KEY", "test-key"),
                 patch.object(bot, "ADMIN_USER_IDS", {100}),
+                patch.object(bot, "get_approved_report_chats", return_value=[{"chat_id": -1, "title": "Развитие"}]),
                 patch.object(bot, "_ACTIVE_AI_REPORTS", set()),
                 patch.object(bot, "_ACTIVE_ARCHIVE_QUESTIONS", set()),
-                patch.object(bot, "build_control_center_report_artifact", return_value={
+                patch.object(bot, "build_ai_pdf_report_artifact", return_value={
                     "message_count": 12,
                     "pdf_path": Path("report.pdf"),
                     "report_data": {"tasks": []},
@@ -230,6 +232,66 @@ class ReportPeriodTests(unittest.TestCase):
 
         self.assertIn("ожидает повторной попытки после ошибки", text)
         self.assertIn("Следующий плановый запуск: 30.10.2026 20:00", text)
+
+    def test_weekly_reports_are_separate_and_retry_only_failed_chat(self):
+        now = datetime(2026, 10, 23, 20, 0, tzinfo=ZoneInfo("Asia/Bangkok"))
+        chats = [{"chat_id": -1, "title": "Развитие"}, {"chat_id": -2, "title": "Networking"}]
+        app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = [root / "development.pdf", root / "networking.pdf"]
+            for path in paths:
+                path.write_bytes(b"test")
+            artifacts = [{"message_count": 12, "pdf_path": path, "report_data": {}} for path in paths]
+            with (
+                patch.object(bot, "WEEKLY_AUTO_REPORT_STATE_PATH", root / "weekly.json"),
+                patch.object(bot, "WEEKLY_AUTO_REPORT_ENABLED", True),
+                patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
+                patch.object(bot, "OPENAI_API_KEY", "test-key"),
+                patch.object(bot, "ADMIN_USER_IDS", {100}),
+                patch.object(bot, "get_approved_report_chats", return_value=chats),
+                patch.object(bot, "_ACTIVE_AI_REPORTS", set()),
+                patch.object(bot, "_ACTIVE_ARCHIVE_QUESTIONS", set()),
+                patch.object(bot, "build_ai_pdf_report_artifact", side_effect=artifacts) as build,
+                patch.object(bot, "build_control_center_report_artifact") as aggregate,
+                patch.object(bot, "send_document_safely_to_chat", AsyncMock(side_effect=[True, False, True])) as send,
+            ):
+                self.assertFalse(asyncio.run(bot.run_weekly_auto_report_if_due(app, now_local=now)))
+                partial = bot.load_weekly_auto_report_state()
+                self.assertEqual(partial["chats"]["-1"]["last_period_until"], now.astimezone(timezone.utc).isoformat())
+                self.assertNotIn("last_period_until", partial["chats"]["-2"])
+                self.assertTrue(asyncio.run(bot.run_weekly_auto_report_if_due(app, now_local=now + timedelta(minutes=16))))
+                state = bot.load_weekly_auto_report_state()
+
+        aggregate.assert_not_called()
+        self.assertEqual(build.call_count, 2)
+        self.assertEqual([call.args[0] for call in build.call_args_list], [-1, -2])
+        self.assertEqual([call.args[2] for call in send.await_args_list], [paths[0], paths[1], paths[1]])
+        self.assertEqual(state["chats"]["-2"]["last_period_until"], now.astimezone(timezone.utc).isoformat())
+
+    def test_weekly_report_retry_does_not_resend_to_successful_admin(self):
+        now = datetime(2026, 10, 23, 20, 0, tzinfo=ZoneInfo("Asia/Bangkok"))
+        app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf = root / "report.pdf"
+            pdf.write_bytes(b"test")
+            with (
+                patch.object(bot, "WEEKLY_AUTO_REPORT_STATE_PATH", root / "weekly.json"),
+                patch.object(bot, "WEEKLY_AUTO_REPORT_ENABLED", True),
+                patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
+                patch.object(bot, "OPENAI_API_KEY", "test-key"),
+                patch.object(bot, "ADMIN_USER_IDS", {100, 200}),
+                patch.object(bot, "get_approved_report_chats", return_value=[{"chat_id": -1, "title": "Развитие"}]),
+                patch.object(bot, "_ACTIVE_AI_REPORTS", set()),
+                patch.object(bot, "_ACTIVE_ARCHIVE_QUESTIONS", set()),
+                patch.object(bot, "build_ai_pdf_report_artifact", return_value={"message_count": 12, "pdf_path": pdf, "report_data": {}}) as build,
+                patch.object(bot, "send_document_safely_to_chat", AsyncMock(side_effect=[True, False, True])) as send,
+            ):
+                self.assertFalse(asyncio.run(bot.run_weekly_auto_report_if_due(app, now_local=now)))
+                self.assertTrue(asyncio.run(bot.run_weekly_auto_report_if_due(app, now_local=now + timedelta(minutes=16))))
+        build.assert_called_once()
+        self.assertEqual([call.args[1] for call in send.await_args_list], [100, 200, 200])
 
 
 class UpcomingEventsTests(unittest.TestCase):

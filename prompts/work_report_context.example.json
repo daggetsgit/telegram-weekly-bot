@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-22T18:00:00+07:00",
+  "facts": [
+    {
+      "chat_titles": ["Example work chat"],
+      "text": "The partner's contract draft is prepared, but there is no evidence that it was sent or signed.",
+      "status": "prepared",
+      "as_of": "2026-10-22T17:00:00+07:00",
+      "source": "Work project / contract discussion / source reference",
+      "evidence": "A draft artifact exists; no external delivery confirmation was found."
+    }
+  ]
+}
