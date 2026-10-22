@@ -263,9 +263,9 @@ TELEGRAM_SEND_TIMEOUT_SECONDS=180
 APP_TIMEZONE=Asia/Bangkok
 REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
-BOT_VERSION=0.6.0
-BOT_BUILD_NAME=openai-voice-transcription
-BOT_BUILD_DATE=2026-06-16
+BOT_VERSION=0.9.0
+BOT_BUILD_NAME=persistent-history-ai-reports
+BOT_BUILD_DATE=2026-10-22
 WORK_ANALYSIS_PROMPT_PATH=data/config/work_analysis_prompt.txt
 ```
 
@@ -403,9 +403,9 @@ DEPLOYMENT_RU.md
 ## Current version
 
 ```text
-Version: 0.6.0
-Build: openai-voice-transcription
-Build date: 2026-06-16
+Version: 0.9.0
+Build: persistent-history-ai-reports
+Build date: 2026-10-22
 ```
 
 Enabled features:

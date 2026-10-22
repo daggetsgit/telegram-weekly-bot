@@ -86,9 +86,14 @@ TELEGRAM_SEND_TIMEOUT_SECONDS = get_positive_int_env("TELEGRAM_SEND_TIMEOUT_SECO
 APP_TIMEZONE, INVALID_APP_TIMEZONE = get_timezone_env("APP_TIMEZONE", "Asia/Bangkok")
 REPORT_TIMEZONE, INVALID_REPORT_TIMEZONE = get_timezone_env("REPORT_TIMEZONE", "Asia/Bangkok")
 WORK_SHIFT_START_HOUR = get_bounded_int_env("WORK_SHIFT_START_HOUR", 9, 0, 23)
-BOT_VERSION = os.getenv("BOT_VERSION", "0.5.0")
-BOT_BUILD_NAME = os.getenv("BOT_BUILD_NAME", "work-packages-private-control-contact-sheets")
-BOT_BUILD_DATE = os.getenv("BOT_BUILD_DATE", "2026-06-12")
+BOT_VERSION = os.getenv("BOT_VERSION", "0.9.0")
+BOT_BUILD_NAME = os.getenv("BOT_BUILD_NAME", "persistent-history-ai-reports")
+BOT_BUILD_DATE = os.getenv("BOT_BUILD_DATE", "2026-10-22")
+DEPLOY_COMMIT_SHA = (
+    os.getenv("RAILWAY_GIT_COMMIT_SHA")
+    or os.getenv("GIT_COMMIT_SHA")
+    or "local"
+)
 CONTACT_SHEET_IMAGES_PER_PAGE = get_positive_int_env("CONTACT_SHEET_IMAGES_PER_PAGE", 4)
 CONTACT_SHEET_PAGE_WIDTH = get_positive_int_env("CONTACT_SHEET_PAGE_WIDTH", 3000)
 CONTACT_SHEET_THUMB_WIDTH = get_positive_int_env("CONTACT_SHEET_THUMB_WIDTH", 1350)
@@ -5313,16 +5318,18 @@ async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Bot version\n\n"
         f"Version: {BOT_VERSION}\n"
         f"Build: {BOT_BUILD_NAME}\n"
-        f"Build date: {BOT_BUILD_DATE}\n\n"
+        f"Build date: {BOT_BUILD_DATE}\n"
+        f"Commit: {DEPLOY_COMMIT_SHA[:12]}\n\n"
         "Enabled features:\n"
         "- approved chats\n"
         "- private /report_chats with buttons\n"
-        "- work packages for 7 days\n"
-        "- work shift packages 09:00–now\n"
+        "- work packages for presets and all saved history\n"
+        "- AI PDF reports and participant task reports\n"
+        "- voice/audio transcript cache and optional transcription\n"
         "- attachments index\n"
         "- OCR-friendly image contact sheets\n"
         "- full archive ZIP\n"
-        "- cleanup / purge commands\n"
+        "- metadata backup and safe export cleanup\n"
         "- storage diagnostics\n"
         "- quiet group mode"
     )
@@ -5337,11 +5344,18 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Bot health\n\n"
         "Status: running\n"
+        f"Commit: {DEPLOY_COMMIT_SHA[:12]}\n"
         f"File retention: {FILE_RETENTION_DAYS} days\n"
         f"Message retention: "
         f"{'unlimited' if MESSAGE_RETENTION_DAYS == 0 else str(MESSAGE_RETENTION_DAYS) + ' days'}\n"
         f"Drop pending updates on start: {TELEGRAM_DROP_PENDING_UPDATES}\n"
-        f"Max file size: {MAX_FILE_SIZE_MB} MB\n\n"
+        f"Max file size: {MAX_FILE_SIZE_MB} MB\n"
+        f"Transcription enabled: {TRANSCRIBE_VOICE}\n"
+        f"AI reports enabled: {OPENAI_REPORTS_ENABLED}\n"
+        f"AI report images enabled: {OPENAI_REPORT_INCLUDE_IMAGES}\n"
+        f"AI report two-pass: {OPENAI_REPORT_TWO_PASS}\n"
+        f"Work prompt source: {get_work_analysis_prompt_source()[0]}\n"
+        f"Best Service logo found: {resolve_ai_report_logo_path().exists()}\n\n"
         "Storage:\n"
         f"Base dir: {data['base_dir']}\n"
         f"Data dir: {data['data_dir']}\n"
@@ -7174,6 +7188,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
     print("Бот запущен. Нажми Ctrl+C для остановки.")
+    print(f"Version: {BOT_VERSION} | build: {BOT_BUILD_NAME} | commit: {DEPLOY_COMMIT_SHA[:12]}")
     print(f"Хранение файлов: последние {FILE_RETENTION_DAYS} дней")
     print(
         "Хранение сообщений: "
