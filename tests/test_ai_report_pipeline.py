@@ -180,6 +180,7 @@ class AiReportTaskRenderingTests(unittest.TestCase):
             pdf = Path(temp_dir) / "facts.pdf"
             bot.render_one_page_report_pdf("", "Тест", "неделя", pdf, report_data=normalized)
             text = "\n".join(page.extract_text() for page in PdfReader(pdf).pages)
+        text = " ".join(text.split())
         self.assertIn("22 (1800)", text)
         self.assertIn("33 (2700)", text)
 
