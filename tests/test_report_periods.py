@@ -78,6 +78,63 @@ class ReportPeriodTests(unittest.TestCase):
 
         self.assertIsNone(due)
 
+    def test_weekly_scheduler_rate_limits_failed_slot_retries(self):
+        scheduled_at = datetime(2026, 10, 23, 20, 0, tzinfo=ZoneInfo("Asia/Bangkok"))
+        state = {
+            "last_attempt_scheduled_at": scheduled_at.isoformat(),
+            "last_attempt_at": "2026-10-23T20:01:00+07:00",
+        }
+
+        with patch.object(bot, "WEEKLY_AUTO_REPORT_RETRY_MINUTES", 15):
+            self.assertFalse(
+                bot.weekly_auto_report_retry_is_due(
+                    scheduled_at,
+                    now_local=datetime(2026, 10, 23, 20, 10, tzinfo=ZoneInfo("Asia/Bangkok")),
+                    state=state,
+                )
+            )
+            self.assertTrue(
+                bot.weekly_auto_report_retry_is_due(
+                    scheduled_at,
+                    now_local=datetime(2026, 10, 23, 20, 16, tzinfo=ZoneInfo("Asia/Bangkok")),
+                    state=state,
+                )
+            )
+
+    def test_weekly_scheduler_does_not_rebuild_during_retry_cooldown(self):
+        now_local = datetime(2026, 10, 23, 20, 10, tzinfo=ZoneInfo("Asia/Bangkok"))
+        scheduled_at = now_local.replace(hour=20, minute=0)
+        since_utc = datetime(2026, 10, 16, 13, 0, tzinfo=timezone.utc)
+        until_utc = now_local.astimezone(timezone.utc)
+        state = {
+            "last_attempt_scheduled_at": scheduled_at.isoformat(),
+            "last_attempt_at": "2026-10-23T20:01:00+07:00",
+        }
+        app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+        with (
+            patch.object(bot, "WEEKLY_AUTO_REPORT_ENABLED", True),
+            patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "ADMIN_USER_IDS", {100}),
+            patch.object(bot, "WEEKLY_AUTO_REPORT_RETRY_MINUTES", 15),
+            patch.object(bot, "_ACTIVE_AI_REPORTS", set()),
+            patch.object(bot, "_ACTIVE_ARCHIVE_QUESTIONS", set()),
+            patch.object(
+                bot,
+                "get_due_weekly_report_period",
+                return_value=(scheduled_at, since_utc, until_utc, "weekly period"),
+            ),
+            patch.object(bot, "load_weekly_auto_report_state", return_value=state),
+            patch.object(bot, "build_control_center_report_artifact") as build,
+            patch.object(bot, "save_weekly_auto_report_state") as save_state,
+        ):
+            sent = asyncio.run(bot.run_weekly_auto_report_if_due(app, now_local=now_local))
+
+        self.assertFalse(sent)
+        build.assert_not_called()
+        save_state.assert_not_called()
+
     def test_weekly_scheduler_saves_boundary_only_after_delivery(self):
         scheduled_at = datetime(2026, 10, 23, 20, 0, tzinfo=ZoneInfo("Asia/Bangkok"))
         since_utc = datetime(2026, 10, 16, 13, 0, tzinfo=timezone.utc)

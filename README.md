@@ -310,6 +310,7 @@ OPENAI_REPORT_TWO_PASS=true
 WEEKLY_AUTO_REPORT_ENABLED=false
 WEEKLY_AUTO_REPORT_HOUR=20
 WEEKLY_AUTO_REPORT_MINUTE=0
+WEEKLY_AUTO_REPORT_RETRY_MINUTES=15
 AI_REPORT_LOGO_PATH=assets/bs_logo.png
 ```
 
@@ -331,7 +332,7 @@ After a successful control-center report, `📋 Последние задачи`
 
 `🔎 Спросить архив` lets an administrator choose an approved chat and period, then ask a plain-text question. The answer uses saved messages, transcripts, important document text, and contact sheets; it cites Telegram message IDs when they are present in the source.
 
-With `WEEKLY_AUTO_REPORT_ENABLED=true`, the bot automatically creates the cross-chat control report every Friday at `WEEKLY_AUTO_REPORT_HOUR:WEEKLY_AUTO_REPORT_MINUTE` in `REPORT_TIMEZONE` and sends it to all configured administrators. The first report starts from the previous Friday; later reports start from the last successfully covered boundary. Use `/weekly_report_status` to verify the schedule and last successful run.
+With `WEEKLY_AUTO_REPORT_ENABLED=true`, the bot automatically creates the cross-chat control report every Friday at `WEEKLY_AUTO_REPORT_HOUR:WEEKLY_AUTO_REPORT_MINUTE` in `REPORT_TIMEZONE` and sends it to all configured administrators. The first report starts from the previous Friday; later reports start from the last successfully covered boundary. Failed attempts are rate-limited by `WEEKLY_AUTO_REPORT_RETRY_MINUTES` so a temporary Telegram or OpenAI outage cannot trigger a costly retry loop. Use `/weekly_report_status` to verify the schedule and last successful run.
 
 The same private flow also provides `👤 Задачи участника`: choose a saved chat participant and a period (7 days, current month, or all saved history). The report uses the normal work analysis prompt and AI pipeline, but focuses on tasks assigned to that person, their expected deliverables, deadlines, status, and source context. “All history” means all rows currently retained in SQLite; it cannot restore data deleted before message history retention was disabled.
 

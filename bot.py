@@ -117,6 +117,10 @@ OPENAI_REPORT_TWO_PASS = os.getenv("OPENAI_REPORT_TWO_PASS", "true").strip().low
 WEEKLY_AUTO_REPORT_ENABLED = os.getenv("WEEKLY_AUTO_REPORT_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 WEEKLY_AUTO_REPORT_HOUR = get_bounded_int_env("WEEKLY_AUTO_REPORT_HOUR", 20, 0, 23)
 WEEKLY_AUTO_REPORT_MINUTE = get_bounded_int_env("WEEKLY_AUTO_REPORT_MINUTE", 0, 0, 59)
+WEEKLY_AUTO_REPORT_RETRY_MINUTES = get_positive_int_env(
+    "WEEKLY_AUTO_REPORT_RETRY_MINUTES",
+    15,
+)
 AI_REPORT_LOGO_PATH = Path(os.getenv("AI_REPORT_LOGO_PATH", "assets/bs_logo.png"))
 BS_REPORT_BLUE = "#2A5177"
 BS_REPORT_BLUE_DARK = "#244B67"
@@ -5307,6 +5311,27 @@ def get_due_weekly_report_period(now_local=None, state=None):
     )
 
 
+def weekly_auto_report_retry_is_due(scheduled_at, now_local=None, state=None):
+    now_local = now_local or datetime.now(REPORT_TIMEZONE)
+    if now_local.tzinfo is None:
+        now_local = now_local.replace(tzinfo=REPORT_TIMEZONE)
+    else:
+        now_local = now_local.astimezone(REPORT_TIMEZONE)
+    state = state if isinstance(state, dict) else load_weekly_auto_report_state()
+
+    if str(state.get("last_attempt_scheduled_at") or "") != scheduled_at.isoformat():
+        return True
+    try:
+        last_attempt = datetime.fromisoformat(
+            str(state.get("last_attempt_at") or "")
+        ).astimezone(REPORT_TIMEZONE)
+    except (TypeError, ValueError):
+        return True
+    return now_local - last_attempt >= timedelta(
+        minutes=WEEKLY_AUTO_REPORT_RETRY_MINUTES
+    )
+
+
 def build_control_center_report_artifact(
     mode: str,
     since_dt: datetime,
@@ -5523,6 +5548,26 @@ async def run_weekly_auto_report_if_due(app: Application, now_local=None) -> boo
     if not due:
         return False
     scheduled_at, since_dt, until_dt, period_label = due
+    state = load_weekly_auto_report_state()
+    attempt_time = now_local or datetime.now(REPORT_TIMEZONE)
+    if attempt_time.tzinfo is None:
+        attempt_time = attempt_time.replace(tzinfo=REPORT_TIMEZONE)
+    else:
+        attempt_time = attempt_time.astimezone(REPORT_TIMEZONE)
+    if not weekly_auto_report_retry_is_due(
+        scheduled_at,
+        now_local=attempt_time,
+        state=state,
+    ):
+        return False
+
+    attempt_state = dict(state)
+    attempt_state.update({
+        "last_attempt_scheduled_at": scheduled_at.isoformat(),
+        "last_attempt_at": attempt_time.isoformat(),
+    })
+    save_weekly_auto_report_state(attempt_state)
+
     report_key = ("weekly-auto", scheduled_at.isoformat())
     _ACTIVE_AI_REPORTS.add(report_key)
     try:
@@ -5568,6 +5613,8 @@ async def run_weekly_auto_report_if_due(app: Application, now_local=None) -> boo
             "last_scheduled_at": scheduled_at.isoformat(),
             "last_period_until": until_dt.isoformat(),
             "last_success_at": datetime.now(timezone.utc).isoformat(),
+            "last_attempt_scheduled_at": scheduled_at.isoformat(),
+            "last_attempt_at": attempt_time.isoformat(),
             "message_count": result["message_count"],
         })
         return True
@@ -8249,6 +8296,7 @@ async def weekly_report_status(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Статус: {'включён' if WEEKLY_AUTO_REPORT_ENABLED else 'выключен'}\n"
         f"Готов к запуску: {'да' if ready else 'нет'}\n"
         f"Расписание: пятница, {WEEKLY_AUTO_REPORT_HOUR:02d}:{WEEKLY_AUTO_REPORT_MINUTE:02d} {timezone_name}\n"
+        f"Повтор после ошибки: через {WEEKLY_AUTO_REPORT_RETRY_MINUTES} мин.\n"
         f"Следующий запуск: {next_schedule.strftime('%d.%m.%Y %H:%M')} {timezone_name}\n"
         f"Последний успешный период до: {state.get('last_period_until') or 'ещё не запускался'}\n"
         f"Последняя успешная отправка: {state.get('last_success_at') or 'ещё не запускалась'}"
