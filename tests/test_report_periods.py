@@ -269,6 +269,24 @@ class ReportPeriodTests(unittest.TestCase):
         self.assertEqual([call.args[2] for call in send.await_args_list], [paths[0], paths[1], paths[1]])
         self.assertEqual(state["chats"]["-2"]["last_period_until"], now.astimezone(timezone.utc).isoformat())
 
+    def test_legacy_delivery_pause_preserves_progress_for_new_scheduler(self):
+        import json
+
+        now = datetime(2026, 10, 23, 20, 0, tzinfo=ZoneInfo("Asia/Bangkok"))
+        previous = {"last_period_until": "2026-10-16T13:00:00+00:00"}
+        guard = {
+            "last_scheduled_at": "2099-12-31T00:00:00+00:00",
+            "resume_state_for_individual_reports": previous,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "weekly.json"
+            path.write_text(json.dumps(guard), encoding="utf-8")
+            with patch.object(bot, "WEEKLY_AUTO_REPORT_STATE_PATH", path):
+                self.assertEqual(bot.load_weekly_auto_report_state(), previous)
+                self.assertIsNone(bot.get_due_weekly_report_period(now_local=now, state=guard))
+                due = bot.get_due_weekly_report_period(now_local=now)
+                self.assertEqual(due[1], datetime(2026, 10, 16, 13, tzinfo=timezone.utc))
+
     def test_weekly_report_retry_does_not_resend_to_successful_admin(self):
         now = datetime(2026, 10, 23, 20, 0, tzinfo=ZoneInfo("Asia/Bangkok"))
         app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))

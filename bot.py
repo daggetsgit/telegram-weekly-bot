@@ -5430,7 +5430,13 @@ def load_weekly_auto_report_state():
     except Exception as e:
         logging.warning("Could not read weekly auto-report state: %s", e)
         return {}
-    return state if isinstance(state, dict) else {}
+    if not isinstance(state, dict):
+        return {}
+    # Resume preserved delivery progress after pausing a legacy aggregate worker.
+    resume_state = state.get("resume_state_for_individual_reports")
+    if isinstance(resume_state, dict):
+        return resume_state
+    return state
 
 
 def save_weekly_auto_report_state(state):
