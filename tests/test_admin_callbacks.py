@@ -128,6 +128,8 @@ class AdminCallbackSafetyTests(unittest.TestCase):
             for button in row
         ]
         self.assertIn("admin:control", callback_data)
+        self.assertIn("admin:control_latest", callback_data)
+        self.assertIn("admin:ask", callback_data)
 
     def test_control_center_callback_schedules_private_admin_report(self):
         update, query = make_callback_update("admin:control:week")
@@ -141,6 +143,41 @@ class AdminCallbackSafetyTests(unittest.TestCase):
 
         schedule.assert_called_once_with(context, update, 100, "week")
         query.message.edit_text.assert_awaited_once()
+
+    def test_archive_question_input_schedules_background_answer(self):
+        scheduled = []
+
+        class FakeApplication:
+            def create_task(self, coroutine, update=None, name=None):
+                scheduled.append((update, name))
+                coroutine.close()
+
+        message = SimpleNamespace(
+            text="Что ещё ждём от партнёра?",
+            chat_id=100,
+            reply_text=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=1),
+            message=message,
+        )
+        context = SimpleNamespace(
+            user_data={"archive_question": {
+                "chat_id": -1001,
+                "chat_title": "Рабочий чат",
+                "mode": "week",
+            }},
+            application=FakeApplication(),
+        )
+
+        with patch.object(bot, "ADMIN_USER_IDS", {1}):
+            handled = asyncio.run(bot.handle_archive_question_input(update, context))
+
+        self.assertTrue(handled)
+        self.assertNotIn("archive_question", context.user_data)
+        self.assertEqual(scheduled[0][1], "archive-question--1001")
+        message.reply_text.assert_awaited_once()
 
 
 if __name__ == "__main__":

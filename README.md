@@ -265,9 +265,9 @@ TELEGRAM_SEND_TIMEOUT_SECONDS=180
 APP_TIMEZONE=Asia/Bangkok
 REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
-BOT_VERSION=0.9.0
-BOT_BUILD_NAME=persistent-history-ai-reports
-BOT_BUILD_DATE=2026-10-22
+BOT_VERSION=0.10.0
+BOT_BUILD_NAME=control-center-weekly-reports
+BOT_BUILD_DATE=2026-10-23
 WORK_ANALYSIS_PROMPT_PATH=data/config/work_analysis_prompt.txt
 ```
 
@@ -300,13 +300,16 @@ AI PDF reports:
 
 ```env
 OPENAI_REPORTS_ENABLED=false
-OPENAI_REPORT_MODEL=gpt-5-mini
+OPENAI_REPORT_MODEL=gpt-6.1-sol
 OPENAI_REPORT_TIMEOUT_SECONDS=180
 OPENAI_REPORT_MAX_INPUT_CHARS=250000
 OPENAI_REPORT_TEMPERATURE=0.2
 OPENAI_REPORT_INCLUDE_IMAGES=true
 OPENAI_REPORT_MAX_IMAGES=6
 OPENAI_REPORT_TWO_PASS=true
+WEEKLY_AUTO_REPORT_ENABLED=false
+WEEKLY_AUTO_REPORT_HOUR=20
+WEEKLY_AUTO_REPORT_MINUTE=0
 AI_REPORT_LOGO_PATH=assets/bs_logo.png
 ```
 
@@ -325,6 +328,10 @@ When enabled, the private admin `/report_chats` flow shows an extra `📄 Кра
 The private admin dashboard also shows `🔥 Контрольный центр`. It creates one Best Service PDF across all approved work chats for the last 7 days, from the previous Monday, or from the start of the current month. The report prioritizes concrete action items, missing owners, external dependencies, blockers, important numbers, and upcoming meetings. AI PDF generation runs in the background, so the bot can keep accepting commands; duplicate requests for the same report are rejected while it is running.
 
 After a successful control-center report, `📋 Последние задачи` opens its cached tasks and risks directly in Telegram without another OpenAI call. This cache lives in the Railway volume and is included in `/backup_database`.
+
+`🔎 Спросить архив` lets an administrator choose an approved chat and period, then ask a plain-text question. The answer uses saved messages, transcripts, important document text, and contact sheets; it cites Telegram message IDs when they are present in the source.
+
+With `WEEKLY_AUTO_REPORT_ENABLED=true`, the bot automatically creates the cross-chat control report every Friday at `WEEKLY_AUTO_REPORT_HOUR:WEEKLY_AUTO_REPORT_MINUTE` in `REPORT_TIMEZONE` and sends it to all configured administrators. The first report starts from the previous Friday; later reports start from the last successfully covered boundary. Use `/weekly_report_status` to verify the schedule and last successful run.
 
 The same private flow also provides `👤 Задачи участника`: choose a saved chat participant and a period (7 days, current month, or all saved history). The report uses the normal work analysis prompt and AI pipeline, but focuses on tasks assigned to that person, their expected deliverables, deadlines, status, and source context. “All history” means all rows currently retained in SQLite; it cannot restore data deleted before message history retention was disabled.
 
@@ -409,9 +416,9 @@ DEPLOYMENT_RU.md
 ## Current version
 
 ```text
-Version: 0.9.0
-Build: persistent-history-ai-reports
-Build date: 2026-10-22
+Version: 0.10.0
+Build: control-center-weekly-reports
+Build date: 2026-10-23
 ```
 
 Enabled features:

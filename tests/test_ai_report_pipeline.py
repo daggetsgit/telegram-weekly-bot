@@ -42,24 +42,40 @@ class AiReportImageInputTests(unittest.TestCase):
             response,
         ])
 
-        result = bot.create_openai_report_response(
-            SimpleNamespace(responses=responses),
-            [{"role": "user", "content": "test"}],
-        )
+        with patch.object(bot, "OPENAI_REPORT_MODEL", "gpt-5-mini"):
+            result = bot.create_openai_report_response(
+                SimpleNamespace(responses=responses),
+                [{"role": "user", "content": "test"}],
+            )
 
         self.assertIs(result, response)
         self.assertEqual(len(responses.calls), 2)
         self.assertIn("temperature", responses.calls[0])
         self.assertNotIn("temperature", responses.calls[1])
 
-    def test_unrelated_unsupported_error_is_not_retried(self):
-        responses = SequencedResponses([RuntimeError("unsupported image format")])
+    def test_gpt6_request_omits_temperature(self):
+        response = SimpleNamespace(output_text="{}")
+        responses = SequencedResponses([response])
 
-        with self.assertRaisesRegex(RuntimeError, "unsupported image format"):
-            bot.create_openai_report_response(
+        with patch.object(bot, "OPENAI_REPORT_MODEL", "gpt-6.1-sol"):
+            result = bot.create_openai_report_response(
                 SimpleNamespace(responses=responses),
                 [{"role": "user", "content": "test"}],
             )
+
+        self.assertIs(result, response)
+        self.assertEqual(len(responses.calls), 1)
+        self.assertNotIn("temperature", responses.calls[0])
+
+    def test_unrelated_unsupported_error_is_not_retried(self):
+        responses = SequencedResponses([RuntimeError("unsupported image format")])
+
+        with patch.object(bot, "OPENAI_REPORT_MODEL", "gpt-5-mini"):
+            with self.assertRaisesRegex(RuntimeError, "unsupported image format"):
+                bot.create_openai_report_response(
+                    SimpleNamespace(responses=responses),
+                    [{"role": "user", "content": "test"}],
+                )
 
         self.assertEqual(len(responses.calls), 1)
 
@@ -323,6 +339,35 @@ class ControlCenterReportTests(unittest.TestCase):
         self.assertIn("Рабочий чат: Чат B", chat_export_text)
         self.assertEqual(len(generate.call_args.kwargs["contact_sheet_paths"]), 2)
         render.assert_called_once()
+
+    def test_archive_question_stops_when_period_has_no_messages(self):
+        with (
+            patch.object(
+                bot,
+                "get_ai_report_interval",
+                return_value=(
+                    bot.datetime(2026, 10, 1, tzinfo=bot.timezone.utc),
+                    bot.datetime(2026, 10, 8, tzinfo=bot.timezone.utc),
+                    "7 дней",
+                ),
+            ),
+            patch.object(bot, "prepare_transcripts_for_period"),
+            patch.object(bot, "export_interval", return_value=(Path("empty.md"), 0)),
+            patch.object(bot, "create_attachments_index") as create_index,
+        ):
+            result = bot.build_archive_answer(-1001, "Рабочий чат", "week", "Что решили?")
+
+        self.assertEqual(result["message_count"], 0)
+        create_index.assert_not_called()
+
+    def test_long_archive_answer_is_split_without_data_loss(self):
+        text = ("Первый абзац.\n\n" + "Важный факт. " * 500).strip()
+
+        chunks = bot.split_telegram_text(text, limit=300)
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 300 for chunk in chunks))
+        self.assertEqual(" ".join(" ".join(chunks).split()), " ".join(text.split()))
 
     def test_week_package_stops_before_building_empty_files(self):
         context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))

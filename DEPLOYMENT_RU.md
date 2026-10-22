@@ -124,9 +124,9 @@ EXPORT_CLEANUP_DEFAULT_DAYS=7
 APP_TIMEZONE=Asia/Bangkok
 REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
-BOT_VERSION=0.9.0
-BOT_BUILD_NAME=persistent-history-ai-reports
-BOT_BUILD_DATE=2026-10-22
+BOT_VERSION=0.10.0
+BOT_BUILD_NAME=control-center-weekly-reports
+BOT_BUILD_DATE=2026-10-23
 WORK_ANALYSIS_PROMPT_PATH=data/config/work_analysis_prompt.txt
 ```
 
@@ -159,13 +159,16 @@ AI PDF-отчёты:
 
 ```env
 OPENAI_REPORTS_ENABLED=false
-OPENAI_REPORT_MODEL=gpt-5-mini
+OPENAI_REPORT_MODEL=gpt-6.1-sol
 OPENAI_REPORT_TIMEOUT_SECONDS=180
 OPENAI_REPORT_MAX_INPUT_CHARS=250000
 OPENAI_REPORT_TEMPERATURE=0.2
 OPENAI_REPORT_INCLUDE_IMAGES=true
 OPENAI_REPORT_MAX_IMAGES=6
 OPENAI_REPORT_TWO_PASS=true
+WEEKLY_AUTO_REPORT_ENABLED=false
+WEEKLY_AUTO_REPORT_HOUR=20
+WEEKLY_AUTO_REPORT_MINUTE=0
 AI_REPORT_LOGO_PATH=assets/bs_logo.png
 ```
 
@@ -247,6 +250,10 @@ OPENAI_REPORTS_ENABLED=true
 В личном кабинете также появляется кнопка `🔥 Контрольный центр`. Она собирает единый Best Service PDF по всем подтверждённым рабочим чатам за 7 дней, с прошлого понедельника или с 1 числа. В сводку попадают конкретные задачи, неназначенные ответственные, ожидания от внешних сторон, блокеры, важные суммы и будущие встречи. AI PDF формируется в фоне, поэтому бот продолжает принимать команды; повторный запрос того же отчёта во время сборки не запускает второй OpenAI-вызов.
 
 После успешной сборки кнопка `📋 Последние задачи` показывает сохранённые задачи и риски прямо в Telegram без нового обращения к OpenAI. Кэш хранится в Railway Volume и входит в `/backup_database`.
+
+Кнопка `🔎 Спросить архив` позволяет выбрать подтверждённый чат и период, а затем задать вопрос обычным текстом. Ответ строится по сохранённым сообщениям, transcripts, доступному тексту важных документов и contact sheets; при наличии источника бот указывает Telegram message ID.
+
+Для обязательного пятничного отчёта установить `WEEKLY_AUTO_REPORT_ENABLED=true`. Бот будет собирать межчатовый контрольный PDF каждую пятницу в `WEEKLY_AUTO_REPORT_HOUR:WEEKLY_AUTO_REPORT_MINUTE` по `REPORT_TIMEZONE` и отправлять всем `ADMIN_USER_IDS`. Первый период начинается с предыдущей пятницы, следующие — с последней успешно сохранённой границы. Проверка расписания и последнего запуска: `/weekly_report_status`.
 
 Кнопка `👤 Задачи участника` позволяет выбрать человека из сохранённых сообщений чата и собрать персональный PDF за 7 дней, с 1 числа или за всю сохранённую историю. Используется тот же актуальный work analysis prompt и двухэтапный AI pipeline; дополнительный фокус отбирает задачи, поставленные выбранному участнику, с результатом, сроком, статусом и контекстом постановки. «Вся история» означает только фактически сохранённые строки SQLite и не восстанавливает ранее удалённые retention-очисткой сообщения.
 
