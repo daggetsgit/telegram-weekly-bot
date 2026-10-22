@@ -128,6 +128,48 @@ class AiReportImageInputTests(unittest.TestCase):
 
 
 class AiReportTaskRenderingTests(unittest.TestCase):
+    def test_analysis_safety_net_preserves_numbers_and_restores_tasks(self):
+        report_data = {
+            "summary": ["Краткий отчёт"],
+            "tasks": [],
+            "important_facts": [],
+            "risks_open_questions": [],
+        }
+        analysis_data = {
+            "important_numbers": [{
+                "label": "Ставки по предложению",
+                "value": "2 100 / 4 200 / 7 300",
+                "currency_or_unit": "RUB",
+                "source": "image",
+                "confidence": "medium",
+            }],
+            "possible_inconsistencies": [{
+                "issue": "Ставки не подтверждены письменно",
+                "how_to_handle": "Запросить подтверждение",
+            }],
+            "action_items": [{
+                "actor": "Юлианна",
+                "target_party": "страховая компания",
+                "action": "Запросить подтверждение ставок",
+                "deliverable": "письменный ответ с актуальными ставками",
+                "reason": "нужно завершить предложение",
+                "source_context": "ставки видны на скриншоте",
+                "deadline": "не указан",
+                "status": "требует подтверждения",
+            }],
+        }
+
+        bot.apply_analysis_report_safety_net(report_data, analysis_data)
+
+        self.assertIn(
+            "2 100 / 4 200 / 7 300 RUB",
+            report_data["important_facts"][0]["fact"],
+        )
+        self.assertIn("Ставки не подтверждены", report_data["risks_open_questions"][0])
+        self.assertEqual(report_data["tasks"][0]["owner"], "Юлианна")
+        self.assertIn("страховая компания", report_data["tasks"][0]["task"])
+        self.assertIn("письменный ответ", report_data["tasks"][0]["task"])
+
     def test_task_status_is_not_rewritten_as_missing(self):
         self.assertEqual(
             bot.compact_pdf_short_value("требуется подтверждение", "status"),

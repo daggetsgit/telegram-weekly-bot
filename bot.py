@@ -3759,6 +3759,88 @@ def apply_important_facts_safety_net(report_data: dict):
             report_data.setdefault("risks_open_questions", []).append(compact_report_text(fact_text, 180))
 
 
+def apply_analysis_report_safety_net(report_data: dict, analysis_data: dict):
+    if not isinstance(report_data, dict) or not isinstance(analysis_data, dict):
+        return
+
+    important_facts = list(report_list(report_data.get("important_facts")))
+    report_text = json.dumps(report_data, ensure_ascii=False).lower()
+    for item in report_list(analysis_data.get("important_numbers")):
+        if not isinstance(item, dict):
+            continue
+        label = compact_report_text(item.get("label"), 80)
+        value = compact_report_text(item.get("value"), 80)
+        unit = compact_report_text(item.get("currency_or_unit"), 40)
+        if not value or value.lower() in report_text:
+            continue
+
+        fact = compact_report_text(
+            f"{label}: {value} {unit}" if label else f"{value} {unit}",
+            180,
+        )
+        confidence = compact_report_text(item.get("confidence"), 20).lower()
+        action = ""
+        if confidence in {"medium", "low"}:
+            action = "Сверить точное значение с исходным материалом перед решением."
+        important_facts.append({
+            "fact": fact,
+            "source_type": compact_report_text(item.get("source"), 40, "attachment"),
+            "action": action,
+        })
+        report_text += " " + fact.lower()
+        if len(important_facts) >= 6:
+            break
+    report_data["important_facts"] = important_facts
+
+    risks = list(report_list(report_data.get("risks_open_questions")))
+    risk_text = " ".join(report_text_value(item).lower() for item in risks)
+    for item in report_list(analysis_data.get("possible_inconsistencies")):
+        if not isinstance(item, dict):
+            continue
+        issue = compact_report_text(item.get("issue"), 130)
+        handling = compact_report_text(item.get("how_to_handle"), 100)
+        if not issue or issue.lower() in risk_text:
+            continue
+        risk = compact_report_text(f"{issue}. {handling}" if handling else issue, 180)
+        risks.append(risk)
+        risk_text += " " + risk.lower()
+        if len(risks) >= 5:
+            break
+    report_data["risks_open_questions"] = risks
+
+    if report_list(report_data.get("tasks")):
+        return
+
+    tasks = []
+    for item in report_list(analysis_data.get("action_items")):
+        if not isinstance(item, dict):
+            continue
+        action = compact_report_text(item.get("action"), 120)
+        target = compact_report_text(item.get("target_party"), 70)
+        deliverable = compact_report_text(item.get("deliverable"), 100)
+        missing_values = {"", "не указан", "не указано", "не назначен"}
+        if (
+            action.lower() in missing_values
+            or target.lower() in missing_values
+            or deliverable.lower() in missing_values
+        ):
+            continue
+        context_parts = [
+            compact_report_text(item.get("source_context"), 80),
+            compact_report_text(item.get("reason"), 80),
+        ]
+        tasks.append({
+            "task": f"{action}; сторона: {target}; результат: {deliverable}",
+            "owner": compact_report_text(item.get("actor"), 70, "не назначен"),
+            "deadline": compact_report_text(item.get("deadline"), 70, "не указан"),
+            "context": ". ".join(part for part in context_parts if part),
+            "status": compact_report_text(item.get("status"), 70, "требует подтверждения"),
+        })
+        if len(tasks) >= 7:
+            break
+    report_data["tasks"] = tasks
+
+
 def create_openai_report_response(client, response_input):
     try:
         return client.responses.create(
@@ -4157,6 +4239,7 @@ IMPORTANT_DOCUMENT_TEXTS:
                 report_generated_at,
                 report_focus=report_focus,
             )
+            apply_analysis_report_safety_net(report_data, analysis_data)
             report_data["upcoming_events"] = analysis_data.get("upcoming_events", [])
             return report_text, normalize_ai_report_data(report_data, report_now=report_now)
         except Exception:
