@@ -2283,6 +2283,10 @@ def human_file_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
+def safe_error_code(error: Exception) -> str:
+    return type(error).__name__
+
+
 async def send_document_safely(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: Path, caption: str = None) -> bool:
     if not file_path.exists():
         await update.message.reply_text(
@@ -2328,20 +2332,22 @@ async def send_document_safely(update: Update, context: ContextTypes.DEFAULT_TYP
         return False
 
     except TelegramError as e:
+        logging.exception("Telegram rejected document upload: %s", file_path.name)
         await update.message.reply_text(
             "Telegram вернул ошибку при отправке файла.\n\n"
             f"Файл: {file_path.name}\n"
             f"Размер: {human_file_size(file_size)}\n"
-            f"Ошибка: {e}"
+            f"Код ошибки: {safe_error_code(e)}"
         )
         return False
 
     except Exception as e:
+        logging.exception("Unexpected document upload error: %s", file_path.name)
         await update.message.reply_text(
             "Не удалось отправить файл из-за непредвиденной ошибки.\n\n"
             f"Файл: {file_path.name}\n"
             f"Размер: {human_file_size(file_size)}\n"
-            f"Ошибка: {e}"
+            f"Код ошибки: {safe_error_code(e)}"
         )
         return False
 
@@ -2758,25 +2764,27 @@ async def send_document_safely_to_chat(context: ContextTypes.DEFAULT_TYPE, targe
         return False
 
     except TelegramError as e:
+        logging.exception("Telegram rejected admin document upload: %s", file_path.name)
         await context.bot.send_message(
             chat_id=target_chat_id,
             text=(
                 "Telegram вернул ошибку при отправке файла.\n\n"
                 f"Файл: {file_path.name}\n"
                 f"Размер: {human_file_size(file_size)}\n"
-                f"Ошибка: {e}"
+                f"Код ошибки: {safe_error_code(e)}"
             ),
         )
         return False
 
     except Exception as e:
+        logging.exception("Unexpected admin document upload error: %s", file_path.name)
         await context.bot.send_message(
             chat_id=target_chat_id,
             text=(
                 "Не удалось отправить файл из-за непредвиденной ошибки.\n\n"
                 f"Файл: {file_path.name}\n"
                 f"Размер: {human_file_size(file_size)}\n"
-                f"Ошибка: {e}"
+                f"Код ошибки: {safe_error_code(e)}"
             ),
         )
         return False
@@ -5043,7 +5051,9 @@ async def handle_set_work_prompt_upload(update: Update, context: ContextTypes.DE
         return True
     except Exception as e:
         logging.exception("Could not download work analysis prompt")
-        await message.reply_text(f"Не удалось загрузить prompt: {e}")
+        await message.reply_text(
+            f"Не удалось загрузить prompt. Код ошибки: {safe_error_code(e)}. Подробности записаны в лог."
+        )
         return True
     finally:
         try:
@@ -6779,7 +6789,9 @@ async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TY
             )
     except Exception as e:
         logging.exception("Could not create work package or AI PDF from inline button")
-        await query.message.reply_text(f"Не удалось выполнить действие.\n\nОшибка: {e}")
+        await query.message.reply_text(
+            f"Не удалось выполнить действие. Код ошибки: {safe_error_code(e)}. Подробности записаны в лог."
+        )
 
 
 async def cleanup_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7061,7 +7073,7 @@ async def work_shift_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logging.exception("Could not create work shift ZIP archive")
         await update.message.reply_text(
             "Не удалось создать ZIP-архив смены. Первые 3 файла уже готовы, но вложения в ZIP не собраны.\n\n"
-            f"Ошибка: {e}"
+            f"Код ошибки: {safe_error_code(e)}. Подробности записаны в лог."
         )
         return
 
