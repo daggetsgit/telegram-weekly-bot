@@ -6076,7 +6076,7 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             chat_title_for_filename=source_chat_title,
             period_label=period_label,
         )
-        if mode in ("prevweek", "month", "all") and message_count == 0:
+        if message_count == 0:
             await context.bot.send_message(
                 chat_id=target_chat_id,
                 text=f"За выбранный период в чате «{source_chat_title}» сообщений не найдено.\nПериод: {period_label}",
@@ -6133,6 +6133,14 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             chat_id=source_chat_id,
             chat_title_for_filename=source_chat_title,
         )
+        if message_count == 0:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=(
+                    f"За последние 7 дней в чате «{source_chat_title}» сообщений не найдено."
+                ),
+            )
+            return
 
         attachments_index_path, attachment_count = create_attachments_index(
             7,

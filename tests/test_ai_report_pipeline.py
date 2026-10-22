@@ -1,9 +1,10 @@
+import asyncio
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import bot
 
@@ -86,6 +87,48 @@ class AiReportTaskRenderingTests(unittest.TestCase):
         self.assertEqual(
             bot.compact_pdf_short_value("не указан / требуется подтверждение", "deadline"),
             "не указан",
+        )
+
+
+class WorkPackageEmptyPeriodTests(unittest.TestCase):
+    def test_shift_package_stops_before_building_empty_files(self):
+        context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+        with patch.object(bot, "prepare_transcripts_for_period"), patch.object(
+            bot, "export_interval", return_value=(Path("empty.md"), 0)
+        ), patch.object(bot, "create_attachments_index") as create_index:
+            asyncio.run(bot.send_work_package_for_source_chat(
+                context,
+                target_chat_id=10,
+                source_chat_id=-1001,
+                source_chat_title="Рабочий чат",
+                mode="shift",
+            ))
+
+        create_index.assert_not_called()
+        self.assertIn(
+            "сообщений не найдено",
+            context.bot.send_message.await_args_list[-1].kwargs["text"],
+        )
+
+    def test_week_package_stops_before_building_empty_files(self):
+        context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+        with patch.object(bot, "prepare_transcripts_for_period"), patch.object(
+            bot, "export_last_days", return_value=(Path("empty.md"), 0)
+        ), patch.object(bot, "create_attachments_index") as create_index:
+            asyncio.run(bot.send_work_package_for_source_chat(
+                context,
+                target_chat_id=10,
+                source_chat_id=-1001,
+                source_chat_title="Рабочий чат",
+                mode="week",
+            ))
+
+        create_index.assert_not_called()
+        self.assertIn(
+            "сообщений не найдено",
+            context.bot.send_message.await_args_list[-1].kwargs["text"],
         )
 
 
