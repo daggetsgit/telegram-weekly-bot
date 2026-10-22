@@ -159,15 +159,23 @@ class AiReportTaskRenderingTests(unittest.TestCase):
                 ]
             ],
             "risks_open_questions": ["Риск " + str(i) for i in range(5)],
-            "important_facts": [{
-                "fact": "На скриншоте видны ставки 22 (1800), 27 (2200), 33 (2700).",
-                "source_type": "image",
-                "action": "Сверить валюту и условия с договором.",
-            }],
+            "important_facts": [
+                {
+                    "fact": "Рабочий чат: на изображении таблицы страховой компании видны ставки 22 (1800), 27 (2200).",
+                    "source_type": "image",
+                    "action": "Сверить валюту и условия с договором.",
+                },
+                {
+                    "fact": "Рабочий чат: на изображении таблицы страховой компании видны ставки 33 (2700).",
+                    "source_type": "image",
+                    "action": "Подтвердить применимость к другим направлениям.",
+                },
+            ],
         }
 
         normalized = bot.normalize_ai_report_data(report)
-        self.assertEqual(len(normalized["key_topics"]), 5)
+        self.assertEqual(len(normalized["important_facts"]), 2)
+        self.assertEqual(len(normalized["key_topics"]), 6)
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf = Path(temp_dir) / "facts.pdf"
             bot.render_one_page_report_pdf("", "Тест", "неделя", pdf, report_data=normalized)

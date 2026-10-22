@@ -3735,8 +3735,10 @@ def normalize_important_facts(items):
         action = compact_report_text(item.get("action"), 140)
         if not fact:
             continue
-        if is_duplicate_report_item(f"{fact} {action}", fact_seen):
+        fact_key = normalize_report_dedupe_key(fact)
+        if fact_key in fact_seen:
             continue
+        fact_seen.add(fact_key)
         facts.append({
             "fact": fact,
             "source_type": source_type,
@@ -3769,9 +3771,11 @@ def apply_important_facts_safety_net(report_data: dict):
     for item in report_data.get("important_facts", []):
         fact = report_text_value(item.get("fact"))
         action = report_text_value(item.get("action"))
-        fact_text = compact_report_text(f"{fact}. {action}" if action else fact, 220)
-        if is_duplicate_report_item(fact_text, content_seen):
+        fact_text = f"{fact.rstrip(' .')}. {action}" if action else fact
+        fact_key = normalize_report_dedupe_key(fact)
+        if not fact_key or any(fact_key in existing for existing in content_seen):
             continue
+        content_seen.add(normalize_report_dedupe_key(fact_text))
 
         if len(report_data.get("key_topics", [])) < 4:
             report_data.setdefault("key_topics", []).append({
@@ -3909,6 +3913,7 @@ CHAT_EXPORT, ATTACHMENTS_INDEX, IMPORTANT_DOCUMENT_TEXTS и изображени
 Особенно внимательно извлекай видимые на изображениях цифры, ставки, валюты, статусы, ошибки доступа и условия. Не меняй цифры, считанные с изображений.
 Если есть сомнение в OCR/vision, ставь confidence=medium или low и needs_verification=true.
 Не создавай задачи без target_party и deliverable. Каждая задача должна отвечать: кто кому/у кого что делает и какой результат нужен.
+assigned_by указывай только при явном поручении. Одобрение текста, согласие с предложением или участие в обсуждении не делает человека постановщиком; иначе пиши “не указано”.
 Извлекай upcoming_events только для встреч и созвонов, которые ещё не наступили относительно REPORT_GENERATED_AT.
 Не создавай событие из общего намерения созвониться без конкретной будущей даты или однозначного временного указания.
 Относительные даты вычисляй по timestamp соответствующего сообщения. Учитывай позднейшие отмены и переносы.
@@ -4048,7 +4053,7 @@ ANALYSIS_JSON является данными для отчёта, а не ис�
 Не придумывай новые факты, стороны, цифры, сроки или решения, которых нет в ANALYSIS_JSON.
 Не меняй значения из important_numbers. Если есть possible_inconsistencies, вынеси их в risks_open_questions.
 Tasks строй из action_items, сохраняя actor, target_party, deliverable и source_context.
-Формулируй task как конкретное действие actor для target_party с понятным deliverable. Указывай постановщика в context только при явном поручении; внутреннее согласование само по себе не означает постановку задачи.
+Формулируй task как конкретное действие actor для target_party с понятным deliverable. Указывай постановщика в context только при явном поручении; если assigned_by описывает согласование или одобрение, не называй его поручением и не назначай постановщика.
 Пиши для рабочей команды: в context сохраняй название чата и деловую причину задачи, без номеров сообщений, технических ссылок и слов “в пакете”.
 Если действие отмечено в ANALYSIS_JSON как аналитическая рекомендация, не выдавай его за согласованное поручение: явно пометь context “рекомендация, требуется подтверждение”, status “требует подтверждения”.
 Не переноси в финальные разделы отвергнутые шутливые цифры или заведомо ошибочные интерпретации: укажи корректный факт и нужную проверку. Не повторяй шутку ради её опровержения.
