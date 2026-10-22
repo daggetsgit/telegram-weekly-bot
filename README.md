@@ -320,6 +320,8 @@ OPENAI_REPORTS_ENABLED=true
 
 When enabled, the private admin `/report_chats` flow shows an extra `📄 Краткий PDF` option for the selected chat/period. The bot builds text inputs from `chat_export.md`, `attachments_index.md`, and the current work analysis prompt, adds image contact sheets when `OPENAI_REPORT_INCLUDE_IMAGES=true`, asks OpenAI for a compact 1–2 page report, renders it as PDF, and sends it to the admin in private chat.
 
+The same private flow also provides `👤 Задачи участника`: choose a saved chat participant and a period (7 days, current month, or all saved history). The report uses the normal work analysis prompt and AI pipeline, but focuses on tasks assigned to that person, their expected deliverables, deadlines, status, and source context. “All history” means all rows currently retained in SQLite; it cannot restore data deleted before message history retention was disabled.
+
 The report menu also includes two preset periods:
 
 - “с прошлого понедельника” starts at 09:00 on Monday of the previous calendar week;

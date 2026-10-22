@@ -279,6 +279,40 @@ class RetentionTests(unittest.TestCase):
             "29.08.2026 13:15 — 22.10.2026 22:00 Asia/Bangkok",
         )
 
+    def test_chat_participants_are_built_from_saved_messages(self):
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(bot.DB_PATH)
+        conn.executemany(
+            """
+            INSERT INTO messages (
+                chat_id, message_id, date_utc, user_id, username,
+                full_name, message_type, text, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'text', ?, ?)
+            """,
+            [
+                (77, 1, now, 1001, "juliana", "Юлианна", "Первая реплика", now),
+                (77, 2, now, 1001, "juliana", "Юлианна", "Вторая реплика", now),
+                (77, 3, now, 1002, "ivan", "Иван", "Сообщение", now),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        participants = bot.get_chat_participants(77)
+        juliana = bot.get_chat_participant(77, 1001)
+
+        self.assertEqual({item["name"] for item in participants}, {"Юлианна", "Иван"})
+        self.assertEqual(juliana["message_count"], 2)
+        self.assertEqual(juliana["username"], "juliana")
+        self.assertEqual(bot.get_participant_report_label(juliana), "Юлианна (@juliana)")
+
+    def test_person_report_focus_only_targets_assigned_tasks(self):
+        focus = bot.build_person_tasks_report_focus("Юлианна")
+
+        self.assertIn("поставлены этому участнику", focus)
+        self.assertIn("Не включай задачи, которые этот участник поставил другим", focus)
+        self.assertIn("Юлианна", focus)
+
 
 if __name__ == "__main__":
     unittest.main()
