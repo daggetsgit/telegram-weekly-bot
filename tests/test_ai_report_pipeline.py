@@ -22,6 +22,16 @@ class FakeResponses:
 
 
 class AiReportImageInputTests(unittest.TestCase):
+    def test_text_truncation_respects_exact_budget_and_keeps_both_ends(self):
+        source = "BEGIN-" + ("x" * 500) + "-END"
+
+        result = bot.limit_report_input_text("chat_export", source, 120)
+
+        self.assertLessEqual(len(result), 120)
+        self.assertTrue(result.startswith("BEGIN-"))
+        self.assertTrue(result.endswith("-END"))
+        self.assertIn("chat_export truncated", result)
+
     def test_contact_sheet_image_limit_is_enforced(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = []

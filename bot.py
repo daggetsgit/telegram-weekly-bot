@@ -3217,11 +3217,16 @@ def limit_report_input_text(label: str, text: str, max_chars: int) -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
 
-    head_chars = max_chars * 2 // 3
-    tail_chars = max_chars - head_chars
+    marker = f"\n\n[... {label} truncated to fit OPENAI_REPORT_MAX_INPUT_CHARS ...]\n\n"
+    content_budget = max_chars - len(marker)
+    if content_budget <= 0:
+        return text[:max_chars]
+
+    head_chars = content_budget * 2 // 3
+    tail_chars = content_budget - head_chars
     return (
         text[:head_chars]
-        + f"\n\n[... {label} truncated to fit OPENAI_REPORT_MAX_INPUT_CHARS ...]\n\n"
+        + marker
         + text[-tail_chars:]
     )
 
