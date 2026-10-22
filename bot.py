@@ -45,6 +45,16 @@ def get_nonnegative_int_env(name: str, default: int) -> int:
     return value if value >= 0 else default
 
 
+def get_positive_int_env(name: str, default: int) -> int:
+    value = get_int_env(name, default)
+    return value if value > 0 else default
+
+
+def get_bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    value = get_int_env(name, default)
+    return value if minimum <= value <= maximum else default
+
+
 def get_float_env(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, "").strip())
@@ -68,35 +78,35 @@ ADMIN_USER_IDS = (
     else set()
 )
 
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
+MAX_FILE_SIZE_MB = get_positive_int_env("MAX_FILE_SIZE_MB", 50)
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-MAX_TELEGRAM_SEND_SIZE_MB = int(os.getenv("MAX_TELEGRAM_SEND_SIZE_MB", "49"))
+MAX_TELEGRAM_SEND_SIZE_MB = get_positive_int_env("MAX_TELEGRAM_SEND_SIZE_MB", 49)
 MAX_TELEGRAM_SEND_SIZE_BYTES = MAX_TELEGRAM_SEND_SIZE_MB * 1024 * 1024
-TELEGRAM_SEND_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_SEND_TIMEOUT_SECONDS", "180"))
-APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Bangkok"))
+TELEGRAM_SEND_TIMEOUT_SECONDS = get_positive_int_env("TELEGRAM_SEND_TIMEOUT_SECONDS", 180)
+APP_TIMEZONE, INVALID_APP_TIMEZONE = get_timezone_env("APP_TIMEZONE", "Asia/Bangkok")
 REPORT_TIMEZONE, INVALID_REPORT_TIMEZONE = get_timezone_env("REPORT_TIMEZONE", "Asia/Bangkok")
-WORK_SHIFT_START_HOUR = int(os.getenv("WORK_SHIFT_START_HOUR", "9"))
+WORK_SHIFT_START_HOUR = get_bounded_int_env("WORK_SHIFT_START_HOUR", 9, 0, 23)
 BOT_VERSION = os.getenv("BOT_VERSION", "0.5.0")
 BOT_BUILD_NAME = os.getenv("BOT_BUILD_NAME", "work-packages-private-control-contact-sheets")
 BOT_BUILD_DATE = os.getenv("BOT_BUILD_DATE", "2026-06-12")
-CONTACT_SHEET_IMAGES_PER_PAGE = int(os.getenv("CONTACT_SHEET_IMAGES_PER_PAGE", "4"))
-CONTACT_SHEET_PAGE_WIDTH = int(os.getenv("CONTACT_SHEET_PAGE_WIDTH", "3000"))
-CONTACT_SHEET_THUMB_WIDTH = int(os.getenv("CONTACT_SHEET_THUMB_WIDTH", "1350"))
-CONTACT_SHEET_JPEG_QUALITY = int(os.getenv("CONTACT_SHEET_JPEG_QUALITY", "92"))
+CONTACT_SHEET_IMAGES_PER_PAGE = get_positive_int_env("CONTACT_SHEET_IMAGES_PER_PAGE", 4)
+CONTACT_SHEET_PAGE_WIDTH = get_positive_int_env("CONTACT_SHEET_PAGE_WIDTH", 3000)
+CONTACT_SHEET_THUMB_WIDTH = get_positive_int_env("CONTACT_SHEET_THUMB_WIDTH", 1350)
+CONTACT_SHEET_JPEG_QUALITY = get_bounded_int_env("CONTACT_SHEET_JPEG_QUALITY", 92, 1, 100)
 CONTACT_SHEET_FONT_PATH = os.getenv("CONTACT_SHEET_FONT_PATH", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TRANSCRIBE_VOICE = os.getenv("TRANSCRIBE_VOICE", "false").strip().lower() in ("1", "true", "yes", "on")
 TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
-TRANSCRIBE_MAX_AUDIO_MB = int(os.getenv("TRANSCRIBE_MAX_AUDIO_MB", "25"))
+TRANSCRIBE_MAX_AUDIO_MB = get_positive_int_env("TRANSCRIBE_MAX_AUDIO_MB", 25)
 TRANSCRIBE_MAX_AUDIO_BYTES = TRANSCRIBE_MAX_AUDIO_MB * 1024 * 1024
-TRANSCRIBE_TIMEOUT_SECONDS = get_int_env("TRANSCRIBE_TIMEOUT_SECONDS", 120)
+TRANSCRIBE_TIMEOUT_SECONDS = get_positive_int_env("TRANSCRIBE_TIMEOUT_SECONDS", 120)
 OPENAI_REPORTS_ENABLED = os.getenv("OPENAI_REPORTS_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 OPENAI_REPORT_MODEL = os.getenv("OPENAI_REPORT_MODEL", "gpt-5-mini")
-OPENAI_REPORT_TIMEOUT_SECONDS = get_int_env("OPENAI_REPORT_TIMEOUT_SECONDS", 180)
-OPENAI_REPORT_MAX_INPUT_CHARS = get_int_env("OPENAI_REPORT_MAX_INPUT_CHARS", 250000)
+OPENAI_REPORT_TIMEOUT_SECONDS = get_positive_int_env("OPENAI_REPORT_TIMEOUT_SECONDS", 180)
+OPENAI_REPORT_MAX_INPUT_CHARS = get_positive_int_env("OPENAI_REPORT_MAX_INPUT_CHARS", 250000)
 OPENAI_REPORT_TEMPERATURE = get_float_env("OPENAI_REPORT_TEMPERATURE", 0.2)
 OPENAI_REPORT_INCLUDE_IMAGES = os.getenv("OPENAI_REPORT_INCLUDE_IMAGES", "true").strip().lower() in ("1", "true", "yes", "on")
-OPENAI_REPORT_MAX_IMAGES = get_int_env("OPENAI_REPORT_MAX_IMAGES", 6)
+OPENAI_REPORT_MAX_IMAGES = get_nonnegative_int_env("OPENAI_REPORT_MAX_IMAGES", 6)
 OPENAI_REPORT_TWO_PASS = os.getenv("OPENAI_REPORT_TWO_PASS", "true").strip().lower() in ("1", "true", "yes", "on")
 AI_REPORT_LOGO_PATH = Path(os.getenv("AI_REPORT_LOGO_PATH", "assets/bs_logo.png"))
 TELEGRAM_DROP_PENDING_UPDATES = os.getenv(
@@ -142,6 +152,12 @@ if not ADMIN_USER_IDS:
     logging.warning(
         "ADMIN_USER_IDS is missing, empty, or invalid. "
         "All administrator-only actions are disabled."
+    )
+
+if INVALID_APP_TIMEZONE:
+    logging.warning(
+        "Invalid APP_TIMEZONE=%r. Falling back to Asia/Bangkok.",
+        INVALID_APP_TIMEZONE,
     )
 
 if INVALID_REPORT_TIMEZONE:

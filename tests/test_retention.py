@@ -121,6 +121,14 @@ class RetentionTests(unittest.TestCase):
         with patch.dict(os.environ, {"TEST_RETENTION": "0"}):
             self.assertEqual(bot.get_nonnegative_int_env("TEST_RETENTION", 14), 0)
 
+    def test_positive_and_bounded_env_parsers_use_safe_defaults(self):
+        with patch.dict(os.environ, {"TEST_VALUE": "0"}):
+            self.assertEqual(bot.get_positive_int_env("TEST_VALUE", 10), 10)
+        with patch.dict(os.environ, {"TEST_VALUE": "24"}):
+            self.assertEqual(bot.get_bounded_int_env("TEST_VALUE", 9, 0, 23), 9)
+        with patch.dict(os.environ, {"TEST_VALUE": "23"}):
+            self.assertEqual(bot.get_bounded_int_env("TEST_VALUE", 9, 0, 23), 23)
+
     def test_metadata_backup_contains_database_prompt_and_transcripts(self):
         self.add_message(1, age_days=1)
         prompt_path = self.data_dir / "config" / "work_analysis_prompt.txt"
