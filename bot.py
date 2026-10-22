@@ -5333,16 +5333,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    if not chat or chat.type != "private":
+        return
+
     reply_markup = None
+    await update.message.reply_text(
+        "Обновляю личный кабинет...",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
-    if chat and chat.type == "private":
-        await update.message.reply_text(
-            "Обновляю личный кабинет...",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-
-        if is_admin(update):
-            reply_markup = get_private_admin_inline_keyboard()
+    if is_admin(update):
+        reply_markup = get_private_admin_inline_keyboard()
 
     await update.message.reply_text(
         "Личный кабинет\n\n"

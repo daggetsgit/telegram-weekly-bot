@@ -27,6 +27,18 @@ def make_callback_update(data: str, user_id: int = 1, chat_type: str = "private"
 
 
 class AdminCallbackSafetyTests(unittest.TestCase):
+    def test_start_stays_quiet_in_groups(self):
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="supergroup"),
+            effective_user=SimpleNamespace(id=1),
+            message=message,
+        )
+
+        asyncio.run(bot.start(update, SimpleNamespace()))
+
+        message.reply_text.assert_not_awaited()
+
     def test_work_package_callback_stays_quiet_in_groups(self):
         update, query = make_callback_update("workpkg:week:-1001", chat_type="supergroup")
 
