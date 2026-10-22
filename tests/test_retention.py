@@ -149,6 +149,21 @@ class RetentionTests(unittest.TestCase):
         conn.close()
         self.assertEqual(row_count, 1)
 
+    def test_storage_status_reports_history_range_and_expired_attachments(self):
+        old_file = self.files_dir / "old.txt"
+        old_file.write_text("old", encoding="utf-8")
+        self.add_message(1, age_days=20, file_path=str(old_file.relative_to(self.root)))
+        self.add_message(2, age_days=1)
+        bot.cleanup_old_data(file_retention_days=14, message_retention_days=0)
+
+        status = bot.get_storage_status_data()
+
+        self.assertEqual(status["message_count"], 2)
+        self.assertEqual(status["expired_attachment_records"], 1)
+        self.assertIsNotNone(status["oldest_message_at"])
+        self.assertIsNotNone(status["newest_message_at"])
+        self.assertLess(status["oldest_message_at"], status["newest_message_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

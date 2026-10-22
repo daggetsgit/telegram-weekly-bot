@@ -117,11 +117,14 @@ Transcript также добавляется в `01_chat_export.md` рядом �
 FILE_RETENTION_DAYS=14
 MESSAGE_RETENTION_DAYS=0
 TELEGRAM_DROP_PENDING_UPDATES=false
+LOG_MESSAGE_PREVIEWS=false
 ```
 
 `MESSAGE_RETENTION_DAYS=0` означает бессрочное хранение строк сообщений. `FILE_RETENTION_DAYS=0` отключает автоматическую очистку вложений и требует контроля свободного места. Старый `RETENTION_DAYS` поддерживается как fallback для `FILE_RETENTION_DAYS`.
 
 `TELEGRAM_DROP_PENDING_UPDATES=false` позволяет после короткого простоя принять сохранённую Telegram очередь вместо её принудительного сброса. Telegram не предоставляет произвольную загрузку старой истории, поэтому эту настройку рекомендуется оставлять выключенной.
+
+`LOG_MESSAGE_PREVIEWS=false` не позволяет содержимому рабочих сообщений попадать в Railway logs. В логах остаются только технические metadata: chat ID, message ID, автор, тип и путь сохранённого файла.
 
 AI-анализ выполняется вручную: пользователь сам загружает подготовленный пакет в ChatGPT. При `TRANSCRIBE_VOICE=true` voice/audio за выбранный период отправляются в OpenAI transcription API во время сборки пакета, а результат сохраняется в transcript cache.
 

@@ -101,6 +101,9 @@ AI_REPORT_LOGO_PATH = Path(os.getenv("AI_REPORT_LOGO_PATH", "assets/bs_logo.png"
 TELEGRAM_DROP_PENDING_UPDATES = os.getenv(
     "TELEGRAM_DROP_PENDING_UPDATES", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
+LOG_MESSAGE_PREVIEWS = os.getenv("LOG_MESSAGE_PREVIEWS", "false").strip().lower() in (
+    "1", "true", "yes", "on"
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -866,6 +869,15 @@ def get_storage_status_data():
     cur.execute("SELECT COUNT(*) FROM messages WHERE file_path IS NOT NULL")
     db_file_count = cur.fetchone()[0]
 
+    cur.execute("SELECT MIN(date_utc), MAX(date_utc) FROM messages")
+    oldest_message_at, newest_message_at = cur.fetchone()
+
+    cur.execute(
+        "SELECT COUNT(*) FROM messages "
+        "WHERE file_skipped = 1 AND file_skip_reason LIKE 'Local attachment expired%'"
+    )
+    expired_attachment_records = cur.fetchone()[0]
+
     cur.execute("SELECT COUNT(*) FROM chats")
     chats_count = cur.fetchone()[0]
 
@@ -883,6 +895,9 @@ def get_storage_status_data():
         "db_size": db_size,
         "message_count": message_count,
         "db_file_count": db_file_count,
+        "oldest_message_at": oldest_message_at,
+        "newest_message_at": newest_message_at,
+        "expired_attachment_records": expired_attachment_records,
         "chats_count": chats_count,
         "files_size": files_size,
         "exports_size": exports_size,
@@ -899,7 +914,10 @@ def format_storage_status_text(data) -> str:
         "Database:\n"
         f"messages.db: {human_file_size(data['db_size'])}\n"
         f"Messages rows: {data['message_count']}\n"
+        f"Oldest message UTC: {data['oldest_message_at'] or 'n/a'}\n"
+        f"Newest message UTC: {data['newest_message_at'] or 'n/a'}\n"
         f"DB file records: {data['db_file_count']}\n"
+        f"Expired attachment records: {data['expired_attachment_records']}\n"
         f"Known chats: {data['chats_count']}\n\n"
         "Directories:\n"
         f"data/files: {human_file_size(data['files_size'])} / {data['files_count']} files\n"
@@ -6557,12 +6575,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user = message.from_user
         author = user.full_name if user else "unknown"
-        text = message.text or message.caption or ""
         file_part = f" | file={file_info.get('file_path')}" if file_info.get("file_path") else ""
+        preview_part = ""
+        if LOG_MESSAGE_PREVIEWS:
+            text = message.text or message.caption or ""
+            if text:
+                preview_part = f" | preview={text[:80]!r}"
 
         print(
             f"Saved: chat={message.chat.id} msg={message.message_id} | "
-            f"{author} | {detect_message_type(message)} | {text[:80]}{file_part}"
+            f"{author} | {detect_message_type(message)}{file_part}{preview_part}"
         )
 
     except Exception as e:
@@ -6642,6 +6664,7 @@ def main():
         + ("без ограничения" if MESSAGE_RETENTION_DAYS == 0 else f"{MESSAGE_RETENTION_DAYS} дней")
     )
     print(f"Удалять накопленные Telegram updates при старте: {TELEGRAM_DROP_PENDING_UPDATES}")
+    print(f"Показывать текст сообщений в логах: {LOG_MESSAGE_PREVIEWS}")
     print(f"Максимальный размер файла: {MAX_FILE_SIZE_MB} MB")
     print(f"Максимальный размер отправляемого файла: {MAX_TELEGRAM_SEND_SIZE_MB} MB")
     print(f"Telegram send timeout: {TELEGRAM_SEND_TIMEOUT_SECONDS} seconds")

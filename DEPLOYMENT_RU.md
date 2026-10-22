@@ -118,6 +118,7 @@ TELEGRAM_SEND_TIMEOUT_SECONDS=180
 FILE_RETENTION_DAYS=14
 MESSAGE_RETENTION_DAYS=0
 TELEGRAM_DROP_PENDING_UPDATES=false
+LOG_MESSAGE_PREVIEWS=false
 APP_TIMEZONE=Asia/Bangkok
 REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
@@ -171,6 +172,8 @@ AI_REPORT_LOGO_PATH=assets/bs_logo.png
 `FILE_RETENTION_DAYS` управляет сроком хранения локальных копий вложений. После очистки текст сообщения и metadata файла остаются в базе. `MESSAGE_RETENTION_DAYS=0` сохраняет строки сообщений бессрочно; положительное значение включает их автоматическое удаление через указанное число дней. Старый `RETENTION_DAYS` используется как fallback для срока файлов.
 
 Оставляйте `TELEGRAM_DROP_PENDING_UPDATES=false`: после короткого простоя бот попробует получить накопленные Telegram updates, а не удалить их при старте. Значение `true` полезно только для осознанного аварийного сброса очереди.
+
+Оставляйте `LOG_MESSAGE_PREVIEWS=false`, чтобы текст и captions рабочих сообщений не попадали в Railway logs. Для диагностики сохраняются только технические metadata сообщения.
 
 ## 7.1 Настроить prompt для рабочего анализа
 
