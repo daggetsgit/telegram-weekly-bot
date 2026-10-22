@@ -3515,16 +3515,17 @@ def compact_string_list(items, limit: int, max_chars: int, seen_keys: set):
     return compacted
 
 
-def compact_pdf_short_value(value: str) -> str:
+def compact_pdf_short_value(value: str, field: str = "generic") -> str:
     text = report_text_value(value)
     lowered = text.lower()
-    if "требуется назначить" in lowered:
+
+    if field == "owner" and ("требуется назначить" in lowered or "не указан" in lowered):
         return "не назначен"
-    if "требуется подтверждение" in lowered:
+    if field == "deadline" and ("требуется подтверждение" in lowered or "уточнить" in lowered):
         return "не указан"
-    if "не указан" in lowered:
+    if field == "deadline" and "не указан" in lowered:
         return "не указан"
-    if "не назначен" in lowered:
+    if field == "owner" and "не назначен" in lowered:
         return "не назначен"
     return compact_report_text(text, 70)
 
@@ -4449,9 +4450,9 @@ def add_tasks_table(story, tasks, styles, available_width: float):
 
         table_rows.append([
             Paragraph(task_cell, styles["TableCell"]),
-            Paragraph(escape(compact_pdf_short_value(task.get("owner")) or "не назначен"), styles["TableCell"]),
-            Paragraph(escape(compact_pdf_short_value(task.get("deadline")) or "не указан"), styles["TableCell"]),
-            Paragraph(escape(compact_pdf_short_value(task.get("status")) or "не указан"), styles["TableCell"]),
+            Paragraph(escape(compact_pdf_short_value(task.get("owner"), "owner") or "не назначен"), styles["TableCell"]),
+            Paragraph(escape(compact_pdf_short_value(task.get("deadline"), "deadline") or "не указан"), styles["TableCell"]),
+            Paragraph(escape(compact_pdf_short_value(task.get("status"), "status") or "не указан"), styles["TableCell"]),
         ])
 
     table = Table(
