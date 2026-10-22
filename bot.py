@@ -6,6 +6,7 @@ import sqlite3
 import logging
 import shutil
 import zipfile
+import time
 from xml.etree import ElementTree
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from datetime import datetime, timedelta, timezone
@@ -104,6 +105,9 @@ TELEGRAM_DROP_PENDING_UPDATES = os.getenv(
 LOG_MESSAGE_PREVIEWS = os.getenv("LOG_MESSAGE_PREVIEWS", "false").strip().lower() in (
     "1", "true", "yes", "on"
 )
+RETENTION_CLEANUP_INTERVAL_SECONDS = get_nonnegative_int_env(
+    "RETENTION_CLEANUP_INTERVAL_SECONDS", 3600
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -120,6 +124,7 @@ FILE_RETENTION_DAYS = get_nonnegative_int_env(
     get_nonnegative_int_env("RETENTION_DAYS", 14),
 )
 MESSAGE_RETENTION_DAYS = get_nonnegative_int_env("MESSAGE_RETENTION_DAYS", 0)
+_LAST_RETENTION_CLEANUP_MONOTONIC = None
 
 DATA_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
@@ -364,8 +369,28 @@ async def download_attachment(message, context: ContextTypes.DEFAULT_TYPE):
     local_file_name = f"{message.chat.id}_{message.message_id}_{base_name}"
     local_path = target_dir / local_file_name
 
-    telegram_file = await context.bot.get_file(file_id)
-    await telegram_file.download_to_drive(custom_path=local_path)
+    try:
+        telegram_file = await context.bot.get_file(file_id)
+        await telegram_file.download_to_drive(custom_path=local_path)
+    except Exception as e:
+        local_path.unlink(missing_ok=True)
+        logging.warning(
+            "Attachment download failed: chat=%s message=%s type=%s error=%s",
+            message.chat.id,
+            message.message_id,
+            detect_message_type(message),
+            type(e).__name__,
+        )
+        return {
+            "file_id": file_id,
+            "file_unique_id": file_unique_id,
+            "file_name": original_file_name,
+            "file_mime_type": mime_type,
+            "file_size": file_size,
+            "file_path": None,
+            "file_skipped": 1,
+            "file_skip_reason": f"Telegram attachment download failed: {type(e).__name__}",
+        }
 
     relative_path = local_path.relative_to(BASE_DIR)
 
@@ -738,6 +763,23 @@ def cleanup_old_data(
         )
 
     return deleted_messages, deleted_files, expired_attachment_records
+
+
+def maybe_cleanup_old_data(force: bool = False):
+    global _LAST_RETENTION_CLEANUP_MONOTONIC
+
+    now_monotonic = time.monotonic()
+    if (
+        not force
+        and _LAST_RETENTION_CLEANUP_MONOTONIC is not None
+        and now_monotonic - _LAST_RETENTION_CLEANUP_MONOTONIC
+        < RETENTION_CLEANUP_INTERVAL_SECONDS
+    ):
+        return None
+
+    result = cleanup_old_data()
+    _LAST_RETENTION_CLEANUP_MONOTONIC = now_monotonic
+    return result
 
 
 
@@ -6571,7 +6613,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file_info = await download_attachment(message, context)
         save_message(message, file_info)
-        cleanup_old_data()
+        maybe_cleanup_old_data()
 
         user = message.from_user
         author = user.full_name if user else "unknown"
@@ -6613,7 +6655,7 @@ def main():
         raise RuntimeError("Не найден TELEGRAM_BOT_TOKEN в файле .env")
 
     init_db()
-    cleanup_old_data()
+    maybe_cleanup_old_data(force=True)
 
     app = Application.builder().token(BOT_TOKEN).post_init(setup_bot_commands).build()
 
@@ -6665,6 +6707,7 @@ def main():
     )
     print(f"Удалять накопленные Telegram updates при старте: {TELEGRAM_DROP_PENDING_UPDATES}")
     print(f"Показывать текст сообщений в логах: {LOG_MESSAGE_PREVIEWS}")
+    print(f"Интервал retention-очистки: {RETENTION_CLEANUP_INTERVAL_SECONDS} seconds")
     print(f"Максимальный размер файла: {MAX_FILE_SIZE_MB} MB")
     print(f"Максимальный размер отправляемого файла: {MAX_TELEGRAM_SEND_SIZE_MB} MB")
     print(f"Telegram send timeout: {TELEGRAM_SEND_TIMEOUT_SECONDS} seconds")

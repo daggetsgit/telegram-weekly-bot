@@ -119,6 +119,7 @@ FILE_RETENTION_DAYS=14
 MESSAGE_RETENTION_DAYS=0
 TELEGRAM_DROP_PENDING_UPDATES=false
 LOG_MESSAGE_PREVIEWS=false
+RETENTION_CLEANUP_INTERVAL_SECONDS=3600
 APP_TIMEZONE=Asia/Bangkok
 REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
@@ -174,6 +175,8 @@ AI_REPORT_LOGO_PATH=assets/bs_logo.png
 Оставляйте `TELEGRAM_DROP_PENDING_UPDATES=false`: после короткого простоя бот попробует получить накопленные Telegram updates, а не удалить их при старте. Значение `true` полезно только для осознанного аварийного сброса очереди.
 
 Оставляйте `LOG_MESSAGE_PREVIEWS=false`, чтобы текст и captions рабочих сообщений не попадали в Railway logs. Для диагностики сохраняются только технические metadata сообщения.
+
+`RETENTION_CLEANUP_INTERVAL_SECONDS=3600` запускает фоновую retention-очистку не чаще одного раза в час, чтобы обработка накопленных Telegram updates не тормозила на каждом сообщении.
 
 ## 7.1 Настроить prompt для рабочего анализа
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -5,7 +6,9 @@ import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+from unittest.mock import AsyncMock
 
 import bot
 
@@ -163,6 +166,57 @@ class RetentionTests(unittest.TestCase):
         self.assertIsNotNone(status["oldest_message_at"])
         self.assertIsNotNone(status["newest_message_at"])
         self.assertLess(status["oldest_message_at"], status["newest_message_at"])
+
+    def test_cleanup_is_throttled_while_processing_messages(self):
+        original_last_cleanup = bot._LAST_RETENTION_CLEANUP_MONOTONIC
+        original_interval = bot.RETENTION_CLEANUP_INTERVAL_SECONDS
+        bot._LAST_RETENTION_CLEANUP_MONOTONIC = None
+        bot.RETENTION_CLEANUP_INTERVAL_SECONDS = 3600
+        try:
+            with patch.object(bot.time, "monotonic", side_effect=[100.0, 200.0, 3800.0]):
+                with patch.object(bot, "cleanup_old_data", return_value=(0, 0, 0)) as cleanup:
+                    self.assertEqual(bot.maybe_cleanup_old_data(), (0, 0, 0))
+                    self.assertIsNone(bot.maybe_cleanup_old_data())
+                    self.assertEqual(bot.maybe_cleanup_old_data(), (0, 0, 0))
+                    self.assertEqual(cleanup.call_count, 2)
+        finally:
+            bot._LAST_RETENTION_CLEANUP_MONOTONIC = original_last_cleanup
+            bot.RETENTION_CLEANUP_INTERVAL_SECONDS = original_interval
+
+    def test_failed_attachment_download_returns_skipped_metadata(self):
+        document = SimpleNamespace(
+            file_id="file-id",
+            file_unique_id="unique-id",
+            file_name="document.pdf",
+            mime_type="application/pdf",
+            file_size=1024,
+        )
+        message = SimpleNamespace(
+            document=document,
+            photo=None,
+            video=None,
+            voice=None,
+            audio=None,
+            animation=None,
+            text=None,
+            sticker=None,
+            chat=SimpleNamespace(id=-1001),
+            message_id=42,
+            date=datetime.now(timezone.utc),
+        )
+        context = SimpleNamespace(
+            bot=SimpleNamespace(get_file=AsyncMock(side_effect=TimeoutError("test timeout")))
+        )
+
+        file_info = asyncio.run(bot.download_attachment(message, context))
+
+        self.assertEqual(file_info["file_id"], "file-id")
+        self.assertEqual(file_info["file_path"], None)
+        self.assertEqual(file_info["file_skipped"], 1)
+        self.assertEqual(
+            file_info["file_skip_reason"],
+            "Telegram attachment download failed: TimeoutError",
+        )
 
 
 if __name__ == "__main__":
