@@ -140,6 +140,8 @@ DATA_DIR = BASE_DIR / "data"
 EXPORT_DIR = DATA_DIR / "exports"
 FILES_DIR = DATA_DIR / "files"
 TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
+REPORT_CACHE_DIR = DATA_DIR / "report_cache"
+CONTROL_CENTER_CACHE_PATH = REPORT_CACHE_DIR / "control_center_latest.json"
 PROMPTS_DIR = BASE_DIR / "prompts"
 DEFAULT_WORK_ANALYSIS_PROMPT_PATH = DATA_DIR / "config" / "work_analysis_prompt.txt"
 WORK_ANALYSIS_PROMPT_PATH = Path(os.getenv("WORK_ANALYSIS_PROMPT_PATH", str(DEFAULT_WORK_ANALYSIS_PROMPT_PATH)))
@@ -156,6 +158,7 @@ _ACTIVE_AI_REPORTS = set()
 DATA_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
 FILES_DIR.mkdir(exist_ok=True)
+REPORT_CACHE_DIR.mkdir(exist_ok=True)
 
 
 SECRET_LOG_PATTERNS = (
@@ -1108,10 +1111,18 @@ def create_metadata_backup():
                     )
                     transcript_count += 1
 
+            if REPORT_CACHE_DIR.exists():
+                for cache_path in sorted(REPORT_CACHE_DIR.rglob("*.json")):
+                    if cache_path.is_file():
+                        archive.write(
+                            cache_path,
+                            arcname=str(Path("report_cache") / cache_path.relative_to(REPORT_CACHE_DIR)),
+                        )
+
             manifest = (
                 "Telegram Work Summary Bot metadata backup\n"
                 f"Generated UTC: {datetime.now(timezone.utc).isoformat()}\n"
-                "Includes: messages.db, current custom prompt (if present), transcript cache.\n"
+                "Includes: messages.db, current custom prompt (if present), transcript cache, report cache.\n"
                 "Excludes: original attachments and generated exports.\n"
                 f"File retention days: {FILE_RETENTION_DAYS}\n"
                 f"Message retention days: {MESSAGE_RETENTION_DAYS}\n"
@@ -5134,6 +5145,74 @@ def combine_control_center_sections(sections, total_budget: int, label: str) -> 
     )
 
 
+def save_control_center_report_cache(report_data, period_label: str, message_count: int):
+    if not isinstance(report_data, dict):
+        return
+    payload = {
+        "generated_at": datetime.now(APP_TIMEZONE).isoformat(timespec="seconds"),
+        "period_label": period_label,
+        "message_count": message_count,
+        "report": report_data,
+    }
+    temp_path = CONTROL_CENTER_CACHE_PATH.with_suffix(".tmp")
+    temp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(CONTROL_CENTER_CACHE_PATH)
+
+
+def load_control_center_report_cache():
+    if not CONTROL_CENTER_CACHE_PATH.exists():
+        return None
+    try:
+        payload = json.loads(CONTROL_CENTER_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        logging.warning("Could not read control center report cache: %s", e)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def format_control_center_cache_text(payload) -> str:
+    if not isinstance(payload, dict) or not isinstance(payload.get("report"), dict):
+        return "Контрольный центр ещё не формировался."
+
+    report = payload["report"]
+    lines = [
+        "Последние задачи контрольного центра",
+        "",
+        f"Период: {payload.get('period_label') or 'не указан'}",
+        f"Сформировано: {payload.get('generated_at') or 'не указано'}",
+        f"Сообщений в анализе: {payload.get('message_count') or 0}",
+        "",
+        "Задачи:",
+    ]
+    tasks = [item for item in report_list(report.get("tasks")) if isinstance(item, dict)]
+    if not tasks:
+        lines.append("Нет выделенных задач.")
+    for index, task in enumerate(tasks[:10], start=1):
+        task_text = compact_report_text(task.get("task"), 240, "Без формулировки")
+        owner = compact_pdf_short_value(task.get("owner"), "owner")
+        deadline = compact_pdf_short_value(task.get("deadline"), "deadline")
+        status = compact_pdf_short_value(task.get("status"), "status")
+        context_text = compact_report_text(task.get("context"), 140)
+        lines.extend([
+            f"{index}. {task_text}",
+            f"   Ответственный: {owner}; срок: {deadline}; статус: {status}",
+        ])
+        if context_text and context_text.lower() not in task_text.lower():
+            lines.append(f"   Контекст: {context_text}")
+
+    risks = [compact_report_text(item, 220) for item in report_list(report.get("risks_open_questions"))]
+    risks = [item for item in risks if item]
+    if risks:
+        lines.extend(["", "Риски и открытые вопросы:"])
+        lines.extend(f"• {item}" for item in risks[:5])
+
+    text = "\n".join(lines)
+    return text if len(text) <= 3900 else text[:3897].rstrip() + "..."
+
+
 def build_control_center_report_artifact(
     mode: str,
     since_dt: datetime,
@@ -5255,6 +5334,7 @@ def build_control_center_report_artifact(
         report_data=report_data,
         report_title="Контрольный центр",
     )
+    save_control_center_report_cache(report_data, period_label, total_messages)
     return {
         "message_count": total_messages,
         "pdf_path": pdf_path,
@@ -5549,6 +5629,7 @@ def get_private_admin_inline_keyboard():
     ]
     if OPENAI_REPORTS_ENABLED:
         rows.insert(1, [InlineKeyboardButton("🔥 Контрольный центр", callback_data="admin:control")])
+        rows.insert(2, [InlineKeyboardButton("📋 Последние задачи", callback_data="admin:control_latest")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -6928,6 +7009,13 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 [InlineKeyboardButton("С 1 числа", callback_data="admin:control:month")],
                 [InlineKeyboardButton("↩️ В кабинет", callback_data="admin:home")],
             ]),
+        )
+        return
+
+    if data == "admin:control_latest":
+        await query.message.edit_text(
+            format_control_center_cache_text(load_control_center_report_cache()),
+            reply_markup=get_private_admin_inline_keyboard(),
         )
         return
 

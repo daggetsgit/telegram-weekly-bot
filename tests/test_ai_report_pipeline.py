@@ -231,6 +231,30 @@ class WorkPackageEmptyPeriodTests(unittest.TestCase):
 
 
 class ControlCenterReportTests(unittest.TestCase):
+    def test_control_center_cache_round_trip_and_telegram_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "latest.json"
+            report_data = {
+                "tasks": [{
+                    "task": "Запросить у партнёра письменный оффер",
+                    "owner": "не назначен",
+                    "deadline": "не указан",
+                    "context": "Чат: Networking",
+                    "status": "ожидает ответа",
+                }],
+                "risks_open_questions": ["Не подтверждены условия оплаты"],
+            }
+            with patch.object(bot, "CONTROL_CENTER_CACHE_PATH", cache_path):
+                bot.save_control_center_report_cache(report_data, "7 дней", 42)
+                payload = bot.load_control_center_report_cache()
+
+            text = bot.format_control_center_cache_text(payload)
+
+        self.assertIn("Запросить у партнёра", text)
+        self.assertIn("Networking", text)
+        self.assertIn("ожидает ответа", text)
+        self.assertIn("Не подтверждены условия оплаты", text)
+
     def test_control_center_aggregates_only_approved_chats(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

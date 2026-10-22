@@ -21,10 +21,12 @@ class RetentionTests(unittest.TestCase):
         self.files_dir = self.data_dir / "files"
         self.exports_dir = self.data_dir / "exports"
         self.transcripts_dir = self.data_dir / "transcripts"
+        self.report_cache_dir = self.data_dir / "report_cache"
         self.data_dir.mkdir()
         self.files_dir.mkdir()
         self.exports_dir.mkdir()
         self.transcripts_dir.mkdir()
+        self.report_cache_dir.mkdir()
 
         self.originals = {
             "BASE_DIR": bot.BASE_DIR,
@@ -32,6 +34,8 @@ class RetentionTests(unittest.TestCase):
             "FILES_DIR": bot.FILES_DIR,
             "EXPORT_DIR": bot.EXPORT_DIR,
             "TRANSCRIPTS_DIR": bot.TRANSCRIPTS_DIR,
+            "REPORT_CACHE_DIR": bot.REPORT_CACHE_DIR,
+            "CONTROL_CENTER_CACHE_PATH": bot.CONTROL_CENTER_CACHE_PATH,
             "WORK_ANALYSIS_PROMPT_PATH": bot.WORK_ANALYSIS_PROMPT_PATH,
             "DB_PATH": bot.DB_PATH,
         }
@@ -40,6 +44,8 @@ class RetentionTests(unittest.TestCase):
         bot.FILES_DIR = self.files_dir
         bot.EXPORT_DIR = self.exports_dir
         bot.TRANSCRIPTS_DIR = self.transcripts_dir
+        bot.REPORT_CACHE_DIR = self.report_cache_dir
+        bot.CONTROL_CENTER_CACHE_PATH = self.report_cache_dir / "control_center_latest.json"
         bot.WORK_ANALYSIS_PROMPT_PATH = Path("data/config/work_analysis_prompt.txt")
         bot.DB_PATH = self.data_dir / "messages.db"
         bot.init_db()
@@ -137,6 +143,8 @@ class RetentionTests(unittest.TestCase):
         transcript_path = self.transcripts_dir / "2026-10-22" / "voice.transcript.txt"
         transcript_path.parent.mkdir()
         transcript_path.write_text("Тестовая расшифровка", encoding="utf-8")
+        report_cache_path = self.report_cache_dir / "control_center_latest.json"
+        report_cache_path.write_text('{"report": {"tasks": []}}', encoding="utf-8")
 
         backup_path, transcript_count = bot.create_metadata_backup()
 
@@ -149,6 +157,7 @@ class RetentionTests(unittest.TestCase):
                     "messages.db",
                     "config/work_analysis_prompt.txt",
                     "transcripts/2026-10-22/voice.transcript.txt",
+                    "report_cache/control_center_latest.json",
                     "BACKUP_INFO.txt",
                 },
             )

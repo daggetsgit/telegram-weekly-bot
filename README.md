@@ -324,6 +324,8 @@ When enabled, the private admin `/report_chats` flow shows an extra `📄 Кра
 
 The private admin dashboard also shows `🔥 Контрольный центр`. It creates one Best Service PDF across all approved work chats for the last 7 days, from the previous Monday, or from the start of the current month. The report prioritizes concrete action items, missing owners, external dependencies, blockers, important numbers, and upcoming meetings. AI PDF generation runs in the background, so the bot can keep accepting commands; duplicate requests for the same report are rejected while it is running.
 
+After a successful control-center report, `📋 Последние задачи` opens its cached tasks and risks directly in Telegram without another OpenAI call. This cache lives in the Railway volume and is included in `/backup_database`.
+
 The same private flow also provides `👤 Задачи участника`: choose a saved chat participant and a period (7 days, current month, or all saved history). The report uses the normal work analysis prompt and AI pipeline, but focuses on tasks assigned to that person, their expected deliverables, deadlines, status, and source context. “All history” means all rows currently retained in SQLite; it cannot restore data deleted before message history retention was disabled.
 
 The report menu also includes two preset periods:
