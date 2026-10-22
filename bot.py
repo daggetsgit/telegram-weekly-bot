@@ -155,10 +155,43 @@ DATA_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
 FILES_DIR.mkdir(exist_ok=True)
 
+
+SECRET_LOG_PATTERNS = (
+    (re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b"), "[REDACTED_TELEGRAM_TOKEN]"),
+    (re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b"), "[REDACTED_OPENAI_KEY]"),
+    (re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"), r"\1[REDACTED]"),
+)
+
+
+def redact_sensitive_log_text(value) -> str:
+    text = str(value)
+
+    for secret, replacement in (
+        (BOT_TOKEN, "[REDACTED_TELEGRAM_TOKEN]"),
+        (OPENAI_API_KEY, "[REDACTED_OPENAI_KEY]"),
+    ):
+        if secret:
+            text = text.replace(secret, replacement)
+
+    for pattern, replacement in SECRET_LOG_PATTERNS:
+        text = pattern.sub(replacement, text)
+
+    return text
+
+
+class SecretRedactingFormatter(logging.Formatter):
+    def format(self, record):
+        return redact_sensitive_log_text(super().format(record))
+
+
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format=LOG_FORMAT,
     level=logging.WARNING,
 )
+
+for log_handler in logging.getLogger().handlers:
+    log_handler.setFormatter(SecretRedactingFormatter(LOG_FORMAT))
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
