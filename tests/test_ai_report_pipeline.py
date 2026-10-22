@@ -144,6 +144,37 @@ class AiReportImageInputTests(unittest.TestCase):
 
 
 class AiReportTaskRenderingTests(unittest.TestCase):
+    def test_full_sections_do_not_hide_important_image_numbers_from_pdf(self):
+        from pypdf import PdfReader
+
+        report = {
+            "summary": ["Решения за неделю"],
+            "key_topics": [
+                {"title": title, "text": text}
+                for title, text in [
+                    ("Поток", "Обсуждается запуск проекта"),
+                    ("Платежи", "Нужна сверка задолженности"),
+                    ("Сеть", "Проверяется покрытие"),
+                    ("Маркетинг", "Материалы на согласовании"),
+                ]
+            ],
+            "risks_open_questions": ["Риск " + str(i) for i in range(5)],
+            "important_facts": [{
+                "fact": "На скриншоте видны ставки 22 (1800), 27 (2200), 33 (2700).",
+                "source_type": "image",
+                "action": "Сверить валюту и условия с договором.",
+            }],
+        }
+
+        normalized = bot.normalize_ai_report_data(report)
+        self.assertEqual(len(normalized["key_topics"]), 5)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf = Path(temp_dir) / "facts.pdf"
+            bot.render_one_page_report_pdf("", "Тест", "неделя", pdf, report_data=normalized)
+            text = "\n".join(page.extract_text() for page in PdfReader(pdf).pages)
+        self.assertIn("22 (1800)", text)
+        self.assertIn("33 (2700)", text)
+
     def test_analysis_safety_net_preserves_numbers_and_restores_tasks(self):
         report_data = {
             "summary": ["Краткий отчёт"],

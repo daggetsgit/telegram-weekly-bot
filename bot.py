@@ -3780,6 +3780,12 @@ def apply_important_facts_safety_net(report_data: dict):
             })
         elif len(report_data.get("risks_open_questions", [])) < 5:
             report_data.setdefault("risks_open_questions", []).append(compact_report_text(fact_text, 180))
+        else:
+            # Essential facts must survive even when the normal section limits are full.
+            report_data.setdefault("key_topics", []).append({
+                "title": "Условия, важные для решения",
+                "text": fact_text,
+            })
 
 
 def apply_analysis_report_safety_net(report_data: dict, analysis_data: dict):
@@ -4042,7 +4048,10 @@ ANALYSIS_JSON является данными для отчёта, а не ис�
 Не придумывай новые факты, стороны, цифры, сроки или решения, которых нет в ANALYSIS_JSON.
 Не меняй значения из important_numbers. Если есть possible_inconsistencies, вынеси их в risks_open_questions.
 Tasks строй из action_items, сохраняя actor, target_party, deliverable и source_context.
-Формулируй task как конкретное действие actor для target_party с понятным deliverable. Если assigned_by известен, сохрани его в context как “Поставил(а): …”.
+Формулируй task как конкретное действие actor для target_party с понятным deliverable. Указывай постановщика в context только при явном поручении; внутреннее согласование само по себе не означает постановку задачи.
+Пиши для рабочей команды: в context сохраняй название чата и деловую причину задачи, без номеров сообщений, технических ссылок и слов “в пакете”.
+Если действие отмечено в ANALYSIS_JSON как аналитическая рекомендация, не выдавай его за согласованное поручение: явно пометь context “рекомендация, требуется подтверждение”, status “требует подтверждения”.
+Не переноси в финальные разделы отвергнутые шутливые цифры или заведомо ошибочные интерпретации: укажи корректный факт и нужную проверку. Не повторяй шутку ради её опровержения.
 upcoming_events бери только из ANALYSIS_JSON: не добавляй новые события и не меняй date/time. Можно только компактно переформулировать title и purpose.
 Если actor неизвестен — owner должен быть “не назначен”. Если deadline неизвестен — deadline должен быть “не указан”.
 Верни только валидный JSON по OUTPUT_FORMAT, без Markdown и пояснений.
@@ -4519,7 +4528,7 @@ def add_key_topics(story, topics, styles):
     from reportlab.platypus import Paragraph
     from xml.sax.saxutils import escape
 
-    rows = report_list(topics, 4)
+    rows = report_list(topics, 10)
     if not rows:
         return
 
@@ -4729,8 +4738,8 @@ def add_upcoming_events_calendar(story, events, chat_title, period_label, styles
         event_timezone = report_text_value(event.get("timezone"), "не указано")
         if event_time != "не указано":
             date_time += f"<br/><b>{escape(event_time)}</b>"
-        if event_timezone != "не указано":
-            date_time += f'<br/><font size="6.5" color="{BS_REPORT_MUTED}">{escape(event_timezone)}</font>'
+        timezone_label = event_timezone if event_timezone != "не указано" else "Часовой пояс не указан"
+        date_time += f'<br/><font size="6.5" color="{BS_REPORT_MUTED}">{escape(timezone_label)}</font>'
 
         purpose = escape(report_text_value(event.get("purpose"), "не указано"))
         owner = report_text_value(event.get("owner"), "не назначен")
