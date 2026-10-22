@@ -9,3 +9,5 @@ __pycache__/
 .DS_Store
 old_telegram_weekly_bot_code_backup/
 telegram-weekly-bot-code/
+/output/
+/tmp/

@@ -39,6 +39,11 @@ def get_int_env(name: str, default: int) -> int:
         return default
 
 
+def get_nonnegative_int_env(name: str, default: int) -> int:
+    value = get_int_env(name, default)
+    return value if value >= 0 else default
+
+
 def get_float_env(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, "").strip())
@@ -93,6 +98,9 @@ OPENAI_REPORT_INCLUDE_IMAGES = os.getenv("OPENAI_REPORT_INCLUDE_IMAGES", "true")
 OPENAI_REPORT_MAX_IMAGES = get_int_env("OPENAI_REPORT_MAX_IMAGES", 6)
 OPENAI_REPORT_TWO_PASS = os.getenv("OPENAI_REPORT_TWO_PASS", "true").strip().lower() in ("1", "true", "yes", "on")
 AI_REPORT_LOGO_PATH = Path(os.getenv("AI_REPORT_LOGO_PATH", "assets/bs_logo.png"))
+TELEGRAM_DROP_PENDING_UPDATES = os.getenv(
+    "TELEGRAM_DROP_PENDING_UPDATES", "false"
+).strip().lower() in ("1", "true", "yes", "on")
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -104,7 +112,11 @@ DEFAULT_WORK_ANALYSIS_PROMPT_PATH = DATA_DIR / "config" / "work_analysis_prompt.
 WORK_ANALYSIS_PROMPT_PATH = Path(os.getenv("WORK_ANALYSIS_PROMPT_PATH", str(DEFAULT_WORK_ANALYSIS_PROMPT_PATH)))
 WORK_ANALYSIS_PROMPT_EXAMPLE_PATH = PROMPTS_DIR / "work_analysis_prompt.example.txt"
 DB_PATH = DATA_DIR / "messages.db"
-RETENTION_DAYS = 14
+FILE_RETENTION_DAYS = get_nonnegative_int_env(
+    "FILE_RETENTION_DAYS",
+    get_nonnegative_int_env("RETENTION_DAYS", 14),
+)
+MESSAGE_RETENTION_DAYS = get_nonnegative_int_env("MESSAGE_RETENTION_DAYS", 0)
 
 DATA_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
@@ -215,6 +227,14 @@ def init_db():
 
     if "file_skip_reason" not in existing_columns:
         cur.execute("ALTER TABLE messages ADD COLUMN file_skip_reason TEXT")
+
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_date_utc ON messages(date_utc)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_chat_date_utc "
+        "ON messages(chat_id, date_utc)"
+    )
 
     conn.commit()
     conn.close()
@@ -638,63 +658,83 @@ async def ensure_chat_approved(update: Update, context: ContextTypes.DEFAULT_TYP
     return False
 
 
-def cleanup_old_data(retention_days: int = RETENTION_DAYS):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+def cleanup_old_data(
+    file_retention_days: int = FILE_RETENTION_DAYS,
+    message_retention_days: int = MESSAGE_RETENTION_DAYS,
+):
+    now = datetime.now(timezone.utc)
+    deleted_messages = 0
+    deleted_files = 0
+    expired_attachment_records = 0
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT file_path
-        FROM messages
-        WHERE date_utc < ? AND file_path IS NOT NULL
-        """,
-        (cutoff.isoformat(),),
-    )
+    if message_retention_days > 0:
+        message_cutoff = now - timedelta(days=message_retention_days)
+        cur.execute(
+            "SELECT file_path FROM messages "
+            "WHERE date_utc < ? AND file_path IS NOT NULL",
+            (message_cutoff.isoformat(),),
+        )
+        message_file_paths = [row[0] for row in cur.fetchall()]
 
-    old_files = [row[0] for row in cur.fetchall()]
+        for file_path_value in message_file_paths:
+            deleted_files += delete_file_from_message_path(file_path_value)
 
-    cur.execute(
-        """
-        DELETE FROM messages
-        WHERE date_utc < ?
-        """,
-        (cutoff.isoformat(),),
-    )
+        cur.execute(
+            "DELETE FROM messages WHERE date_utc < ?",
+            (message_cutoff.isoformat(),),
+        )
+        deleted_messages = cur.rowcount
 
-    deleted_messages = cur.rowcount
+    if file_retention_days > 0:
+        file_cutoff = now - timedelta(days=file_retention_days)
+        cur.execute(
+            """
+            SELECT id, file_path
+            FROM messages
+            WHERE date_utc < ? AND file_path IS NOT NULL
+            """,
+            (file_cutoff.isoformat(),),
+        )
+        attachment_rows = cur.fetchall()
+
+        for _message_row_id, file_path_value in attachment_rows:
+            deleted_files += delete_file_from_message_path(file_path_value)
+
+        cur.execute(
+            """
+            UPDATE messages
+            SET file_path = NULL,
+                file_skipped = 1,
+                file_skip_reason = ?
+            WHERE date_utc < ? AND file_path IS NOT NULL
+            """,
+            (
+                f"Local attachment expired after {file_retention_days} days; "
+                "message text and metadata retained.",
+                file_cutoff.isoformat(),
+            ),
+        )
+        expired_attachment_records = cur.rowcount
 
     conn.commit()
     conn.close()
 
-    deleted_files = 0
+    cleanup_empty_dirs(FILES_DIR)
 
-    for relative_file_path in old_files:
-        file_path = BASE_DIR / relative_file_path
-
-        try:
-            if file_path.exists() and file_path.is_file():
-                file_path.unlink()
-                deleted_files += 1
-        except Exception as e:
-            print(f"Could not delete old file {file_path}: {e}")
-
-    # Remove empty date folders inside data/files
-    if FILES_DIR.exists():
-        for folder in sorted(FILES_DIR.iterdir(), reverse=True):
-            if folder.is_dir():
-                try:
-                    if not any(folder.iterdir()):
-                        folder.rmdir()
-                except Exception:
-                    pass
-
-    if deleted_messages or deleted_files:
+    if deleted_messages or deleted_files or expired_attachment_records:
         print(
-            f"Cleanup complete: deleted_messages={deleted_messages}, "
-            f"deleted_files={deleted_files}, retention_days={retention_days}"
+            "Cleanup complete: "
+            f"deleted_messages={deleted_messages}, "
+            f"deleted_files={deleted_files}, "
+            f"expired_attachment_records={expired_attachment_records}, "
+            f"file_retention_days={file_retention_days}, "
+            f"message_retention_days={message_retention_days}"
         )
+
+    return deleted_messages, deleted_files, expired_attachment_records
 
 
 
@@ -787,32 +827,7 @@ def purge_all_archive_data():
 
 
 def force_retention_cleanup():
-    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute(
-        "SELECT file_path FROM messages WHERE date_utc < ? AND file_path IS NOT NULL",
-        (cutoff.isoformat(),),
-    )
-    file_paths = [row[0] for row in cur.fetchall()]
-
-    deleted_files = 0
-    for fp in file_paths:
-        deleted_files += delete_file_from_message_path(fp)
-
-    cur.execute("SELECT COUNT(*) FROM messages WHERE date_utc < ?", (cutoff.isoformat(),))
-    deleted_messages = cur.fetchone()[0]
-
-    cur.execute("DELETE FROM messages WHERE date_utc < ?", (cutoff.isoformat(),))
-
-    conn.commit()
-    conn.close()
-
-    cleanup_empty_dirs(FILES_DIR)
-
-    return deleted_messages, deleted_files
+    return cleanup_old_data()
 
 
 
@@ -4831,7 +4846,7 @@ Legacy/manual: собрать пакет текущего чата за смен
 Очистка данных:
 
 /cleanup_now
-Принудительно запустить retention-очистку старше 14 дней.
+Принудительно запустить настроенную retention-очистку файлов и сообщений.
 
 /purge_chat <chat_id>
 Полностью удалить архив конкретного чата и его файлы.
@@ -4977,7 +4992,10 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Bot health\n\n"
         "Status: running\n"
-        f"Retention: {RETENTION_DAYS} days\n"
+        f"File retention: {FILE_RETENTION_DAYS} days\n"
+        f"Message retention: "
+        f"{'unlimited' if MESSAGE_RETENTION_DAYS == 0 else str(MESSAGE_RETENTION_DAYS) + ' days'}\n"
+        f"Drop pending updates on start: {TELEGRAM_DROP_PENDING_UPDATES}\n"
         f"Max file size: {MAX_FILE_SIZE_MB} MB\n\n"
         "Storage:\n"
         f"Base dir: {data['base_dir']}\n"
@@ -6104,13 +6122,16 @@ async def cleanup_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
 
-    deleted_messages, deleted_files = force_retention_cleanup()
+    deleted_messages, deleted_files, expired_attachment_records = force_retention_cleanup()
 
     await update.message.reply_text(
         "Принудительная retention-очистка выполнена.\n\n"
-        f"Удалено сообщений: {deleted_messages}\n"
+        f"Удалено строк сообщений: {deleted_messages}\n"
         f"Удалено файлов: {deleted_files}\n"
-        f"Retention: {RETENTION_DAYS} дней"
+        f"Помечено удалённых вложений: {expired_attachment_records}\n"
+        f"Хранение файлов: {FILE_RETENTION_DAYS} дней\n"
+        f"Хранение сообщений: "
+        f"{'без ограничения' if MESSAGE_RETENTION_DAYS == 0 else str(MESSAGE_RETENTION_DAYS) + ' дней'}"
     )
 
 
@@ -6494,7 +6515,12 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
     print("Бот запущен. Нажми Ctrl+C для остановки.")
-    print(f"Хранение данных: последние {RETENTION_DAYS} дней")
+    print(f"Хранение файлов: последние {FILE_RETENTION_DAYS} дней")
+    print(
+        "Хранение сообщений: "
+        + ("без ограничения" if MESSAGE_RETENTION_DAYS == 0 else f"{MESSAGE_RETENTION_DAYS} дней")
+    )
+    print(f"Удалять накопленные Telegram updates при старте: {TELEGRAM_DROP_PENDING_UPDATES}")
     print(f"Максимальный размер файла: {MAX_FILE_SIZE_MB} MB")
     print(f"Максимальный размер отправляемого файла: {MAX_TELEGRAM_SEND_SIZE_MB} MB")
     print(f"Telegram send timeout: {TELEGRAM_SEND_TIMEOUT_SECONDS} seconds")
@@ -6529,7 +6555,7 @@ def main():
     print("/purge_chat <chat_id> — удалить архив конкретного чата")
     print("/purge_all_data CONFIRM — удалить весь архив")
 
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=TELEGRAM_DROP_PENDING_UPDATES)
 
 
 if __name__ == "__main__":
