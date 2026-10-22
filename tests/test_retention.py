@@ -226,6 +226,32 @@ class RetentionTests(unittest.TestCase):
             "Telegram attachment download failed: TimeoutError",
         )
 
+    def test_all_history_interval_starts_with_earliest_saved_message(self):
+        earliest = datetime(2026, 8, 29, 6, 15, tzinfo=timezone.utc)
+        latest = datetime(2026, 10, 20, 14, 2, tzinfo=timezone.utc)
+        conn = sqlite3.connect(bot.DB_PATH)
+        for message_id, message_date in ((1, earliest), (2, latest)):
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    chat_id, message_id, date_utc, message_type, text, created_at
+                ) VALUES (?, ?, ?, 'text', ?, ?)
+                """,
+                (77, message_id, message_date.isoformat(), f"message {message_id}", message_date.isoformat()),
+            )
+        conn.commit()
+        conn.close()
+        until = datetime(2026, 10, 22, 15, 0, tzinfo=timezone.utc)
+
+        since_dt, until_dt, label = bot.get_chat_history_interval(77, until_dt=until)
+
+        self.assertEqual(since_dt, earliest)
+        self.assertEqual(until_dt, until)
+        self.assertEqual(
+            label,
+            "29.08.2026 13:15 — 22.10.2026 22:00 Asia/Bangkok",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

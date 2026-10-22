@@ -2375,6 +2375,46 @@ def get_current_month_report_interval(now_local=None):
     )
 
 
+def get_chat_history_interval(chat_id: int, until_dt=None):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT MIN(date_utc) FROM messages WHERE chat_id = ?",
+        (chat_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        return None
+
+    try:
+        since_dt = datetime.fromisoformat(row[0])
+    except (TypeError, ValueError):
+        logging.warning("Invalid earliest message date for chat %s: %r", chat_id, row[0])
+        return None
+
+    if since_dt.tzinfo is None:
+        since_dt = since_dt.replace(tzinfo=timezone.utc)
+    else:
+        since_dt = since_dt.astimezone(timezone.utc)
+
+    until_dt = until_dt or datetime.now(timezone.utc)
+    if until_dt.tzinfo is None:
+        until_dt = until_dt.replace(tzinfo=timezone.utc)
+    else:
+        until_dt = until_dt.astimezone(timezone.utc)
+
+    timezone_name = getattr(REPORT_TIMEZONE, "key", str(REPORT_TIMEZONE))
+    since_local = since_dt.astimezone(REPORT_TIMEZONE)
+    until_local = until_dt.astimezone(REPORT_TIMEZONE)
+    period_label = (
+        f"{since_local.strftime('%d.%m.%Y %H:%M')} — "
+        f"{until_local.strftime('%d.%m.%Y %H:%M')} {timezone_name}"
+    )
+    return since_dt, until_dt, period_label
+
+
 def export_interval(since_dt, until_dt, chat_id=None, chat_title_for_filename=None, period_label=None):
     scope = "all_chats" if chat_id is None else safe_filename(chat_title_for_filename or str(chat_id))
     export_path = EXPORT_DIR / f"01_chat_export_{scope}_work_shift.md"
@@ -5716,16 +5756,26 @@ def get_approved_chat_title(chat_id: int):
 
 
 async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, target_chat_id: int, source_chat_id: int, source_chat_title: str, mode: str):
-    if mode in ("shift", "prevweek", "month"):
+    if mode in ("shift", "prevweek", "month", "all"):
         if mode == "shift":
             since_dt, until_dt, period_label = get_current_work_shift_interval()
             package_label = "за смену"
         elif mode == "prevweek":
             since_dt, until_dt, period_label = get_previous_monday_report_interval()
             package_label = "с прошлого понедельника"
-        else:
+        elif mode == "month":
             since_dt, until_dt, period_label = get_current_month_report_interval()
             package_label = "с 1 числа"
+        else:
+            history_interval = get_chat_history_interval(source_chat_id)
+            if not history_interval:
+                await context.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=f"В чате «{source_chat_title}» пока нет сохранённых сообщений.",
+                )
+                return
+            since_dt, until_dt, period_label = history_interval
+            package_label = "за всю сохранённую историю"
 
         await context.bot.send_message(
             chat_id=target_chat_id,
@@ -5745,7 +5795,7 @@ async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, 
             chat_title_for_filename=source_chat_title,
             period_label=period_label,
         )
-        if mode in ("prevweek", "month") and message_count == 0:
+        if mode in ("prevweek", "month", "all") and message_count == 0:
             await context.bot.send_message(
                 chat_id=target_chat_id,
                 text=f"За выбранный период в чате «{source_chat_title}» сообщений не найдено.\nПериод: {period_label}",
@@ -5996,6 +6046,9 @@ async def show_report_chats_selection(message, edit: bool = False):
         keyboard.append(
             [InlineKeyboardButton("📦 Пакет — с 1 числа", callback_data=f"workpkg:month:{chat_id}")]
         )
+        keyboard.append(
+            [InlineKeyboardButton("📦 Пакет — вся история", callback_data=f"workpkg:all:{chat_id}")]
+        )
         if OPENAI_REPORTS_ENABLED:
             keyboard.append(
                 [
@@ -6195,6 +6248,7 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 ],
                 [InlineKeyboardButton("📦 Пакет — с прошлого понедельника", callback_data=f"workpkg:prevweek:{chat_id}")],
                 [InlineKeyboardButton("📦 Пакет — с 1 числа", callback_data=f"workpkg:month:{chat_id}")],
+                [InlineKeyboardButton("📦 Пакет — вся история", callback_data=f"workpkg:all:{chat_id}")],
                 [InlineKeyboardButton("↩️ К списку чатов", callback_data="admin:approved")],
             ]),
         )

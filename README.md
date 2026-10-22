@@ -325,6 +325,8 @@ The report menu also includes two preset periods:
 
 Both periods end at the current moment in `REPORT_TIMEZONE`.
 
+Обычный рабочий пакет также можно собрать кнопкой `📦 Пакет — вся история`. Период начинается с самого раннего сообщения, которое фактически присутствует в базе выбранного чата. Режим не восстанавливает сообщения, удалённые до включения долгосрочного хранения.
+
 The AI PDF report is still an MVP. It aims to keep the report concise without dropping important decisions, amounts, risks, and action items. The tasks section is rendered as a real PDF table with owner, deadline, and status columns when the model returns structured data.
 
 When future meetings or calls are explicitly scheduled in the source material, the AI PDF adds a separate final page called “Календарь ближайших встреч и созвонов”. Past events and unscheduled intentions such as “надо созвониться” are excluded. The calendar is generated for every AI PDF period when future events are found.
