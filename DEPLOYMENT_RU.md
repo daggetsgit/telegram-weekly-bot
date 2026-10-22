@@ -120,6 +120,7 @@ MESSAGE_RETENTION_DAYS=0
 TELEGRAM_DROP_PENDING_UPDATES=false
 LOG_MESSAGE_PREVIEWS=false
 RETENTION_CLEANUP_INTERVAL_SECONDS=3600
+EXPORT_CLEANUP_DEFAULT_DAYS=7
 APP_TIMEZONE=Asia/Bangkok
 REPORT_TIMEZONE=Asia/Bangkok
 WORK_SHIFT_START_HOUR=9
@@ -177,6 +178,8 @@ AI_REPORT_LOGO_PATH=assets/bs_logo.png
 Оставляйте `LOG_MESSAGE_PREVIEWS=false`, чтобы текст и captions рабочих сообщений не попадали в Railway logs. Для диагностики сохраняются только технические metadata сообщения.
 
 `RETENTION_CLEANUP_INTERVAL_SECONDS=3600` запускает фоновую retention-очистку не чаще одного раза в час, чтобы обработка накопленных Telegram updates не тормозила на каждом сообщении.
+
+`EXPORT_CLEANUP_DEFAULT_DAYS=7` задаёт срок для двухшаговой кнопки очистки готовых ZIP/PDF/MD/JPG в `data/exports`. Очистка не затрагивает SQLite, исходные вложения, transcripts или custom prompt. Текстовый fallback: `/cleanup_exports 7 CONFIRM`.
 
 ## 7.1 Настроить prompt для рабочего анализа
 

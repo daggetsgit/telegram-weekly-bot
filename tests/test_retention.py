@@ -175,6 +175,33 @@ class RetentionTests(unittest.TestCase):
         self.assertIsNotNone(status["newest_message_at"])
         self.assertLess(status["oldest_message_at"], status["newest_message_at"])
 
+    def test_export_cleanup_only_deletes_old_export_files(self):
+        old_file = self.exports_dir / "old-report.pdf"
+        nested_old_file = self.exports_dir / "nested" / "old-package.zip"
+        recent_file = self.exports_dir / "recent-report.pdf"
+        nested_old_file.parent.mkdir()
+        old_file.write_bytes(b"old")
+        nested_old_file.write_bytes(b"nested-old")
+        recent_file.write_bytes(b"recent")
+
+        old_timestamp = (datetime.now(timezone.utc) - timedelta(days=8)).timestamp()
+        os.utime(old_file, (old_timestamp, old_timestamp))
+        os.utime(nested_old_file, (old_timestamp, old_timestamp))
+
+        candidates = bot.get_old_export_files(days=7)
+        self.assertEqual(
+            {path for path, _size in candidates},
+            {old_file, nested_old_file},
+        )
+
+        deleted_files, freed_bytes = bot.cleanup_old_exports(days=7)
+
+        self.assertEqual(deleted_files, 2)
+        self.assertEqual(freed_bytes, len(b"old") + len(b"nested-old"))
+        self.assertFalse(old_file.exists())
+        self.assertFalse(nested_old_file.exists())
+        self.assertTrue(recent_file.exists())
+
     def test_cleanup_is_throttled_while_processing_messages(self):
         original_last_cleanup = bot._LAST_RETENTION_CLEANUP_MONOTONIC
         original_interval = bot.RETENTION_CLEANUP_INTERVAL_SECONDS

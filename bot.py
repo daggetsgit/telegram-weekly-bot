@@ -118,6 +118,7 @@ LOG_MESSAGE_PREVIEWS = os.getenv("LOG_MESSAGE_PREVIEWS", "false").strip().lower(
 RETENTION_CLEANUP_INTERVAL_SECONDS = get_nonnegative_int_env(
     "RETENTION_CLEANUP_INTERVAL_SECONDS", 3600
 )
+EXPORT_CLEANUP_DEFAULT_DAYS = get_positive_int_env("EXPORT_CLEANUP_DEFAULT_DAYS", 7)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -983,6 +984,42 @@ def format_storage_status_text(data) -> str:
         f"data total: {human_file_size(data['data_size'])} / {data['data_count']} files\n\n"
         "If messages rows are low but messages.db is large, run /vacuum_db."
     )
+
+
+def get_old_export_files(days: int = EXPORT_CLEANUP_DEFAULT_DAYS):
+    cutoff_timestamp = datetime.now(timezone.utc).timestamp() - days * 86400
+    files = []
+
+    if not EXPORT_DIR.exists():
+        return files
+
+    for path in EXPORT_DIR.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime < cutoff_timestamp:
+            files.append((path, stat.st_size))
+
+    return files
+
+
+def cleanup_old_exports(days: int = EXPORT_CLEANUP_DEFAULT_DAYS):
+    deleted_files = 0
+    freed_bytes = 0
+
+    for path, size in get_old_export_files(days):
+        try:
+            path.unlink()
+            deleted_files += 1
+            freed_bytes += size
+        except OSError as e:
+            logging.warning("Could not delete old export %s: %s", path, e)
+
+    cleanup_empty_dirs(EXPORT_DIR)
+    return deleted_files, freed_bytes
 
 
 def create_metadata_backup():
@@ -4935,6 +4972,7 @@ def get_private_admin_inline_keyboard():
         [InlineKeyboardButton("🕓 Ожидают подтверждения", callback_data="admin:pending")],
         [InlineKeyboardButton("💾 Статус хранилища", callback_data="admin:storage")],
         [InlineKeyboardButton("🗄 Скачать резервную копию", callback_data="admin:backup")],
+        [InlineKeyboardButton("🧹 Очистить старые экспорты", callback_data="admin:exports_cleanup_prompt")],
         [InlineKeyboardButton("🆘 Помощь", callback_data="admin:help")],
     ])
 
@@ -4983,6 +5021,9 @@ Legacy/manual: собрать пакет текущего чата за смен
 
 /backup_database
 Скачать резервную копию истории, prompt и transcript cache без тяжёлых вложений.
+
+/cleanup_exports [days] CONFIRM
+Удалить только готовые ZIP/PDF/MD/JPG из data/exports старше указанного срока.
 
 /prompt_status
 Проверить, какой work analysis prompt используется.
@@ -5976,6 +6017,45 @@ async def backup_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
             backup_path.unlink(missing_ok=True)
 
 
+async def cleanup_exports(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or chat.type != "private":
+        return
+    if not await admin_only(update):
+        return
+
+    days = EXPORT_CLEANUP_DEFAULT_DAYS
+    if context.args:
+        try:
+            days = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Срок должен быть целым числом дней.")
+            return
+    if days <= 0:
+        await update.message.reply_text("Срок должен быть больше нуля.")
+        return
+
+    candidates = get_old_export_files(days)
+    total_size = sum(size for _path, size in candidates)
+    confirmed = len(context.args) >= 2 and context.args[1].upper() == "CONFIRM"
+
+    if not confirmed:
+        await update.message.reply_text(
+            f"Найдено export-файлов старше {days} дней: {len(candidates)}\n"
+            f"Объём: {human_file_size(total_size)}\n\n"
+            f"Для удаления отправьте: /cleanup_exports {days} CONFIRM\n"
+            "База, вложения, transcripts и prompt затронуты не будут."
+        )
+        return
+
+    deleted_files, freed_bytes = cleanup_old_exports(days)
+    await update.message.reply_text(
+        "Очистка exports завершена.\n\n"
+        f"Удалено файлов: {deleted_files}\n"
+        f"Освобождено: {human_file_size(freed_bytes)}"
+    )
+
+
 async def vacuum_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await group_private_control_notice(update):
         return
@@ -6214,6 +6294,31 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         finally:
             if backup_path:
                 backup_path.unlink(missing_ok=True)
+        return
+
+    if data == "admin:exports_cleanup_prompt":
+        candidates = get_old_export_files(EXPORT_CLEANUP_DEFAULT_DAYS)
+        total_size = sum(size for _path, size in candidates)
+        await query.message.edit_text(
+            f"Удалить готовые exports старше {EXPORT_CLEANUP_DEFAULT_DAYS} дней?\n\n"
+            f"Файлов: {len(candidates)}\n"
+            f"Объём: {human_file_size(total_size)}\n\n"
+            "База сообщений, исходные вложения, transcripts и prompt не удаляются.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Да, очистить exports", callback_data="admin:exports_cleanup_confirm")],
+                [InlineKeyboardButton("Отмена", callback_data="admin:home")],
+            ]),
+        )
+        return
+
+    if data == "admin:exports_cleanup_confirm":
+        deleted_files, freed_bytes = cleanup_old_exports(EXPORT_CLEANUP_DEFAULT_DAYS)
+        await query.message.edit_text(
+            "Очистка exports завершена.\n\n"
+            f"Удалено файлов: {deleted_files}\n"
+            f"Освобождено: {human_file_size(freed_bytes)}",
+            reply_markup=get_private_admin_inline_keyboard(),
+        )
         return
 
     if data == "admin:help":
@@ -6735,6 +6840,7 @@ def main():
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("storage_status", storage_status))
     app.add_handler(CommandHandler("backup_database", backup_database))
+    app.add_handler(CommandHandler("cleanup_exports", cleanup_exports))
     app.add_handler(CommandHandler("prompt_status", prompt_status))
     app.add_handler(CommandHandler("reset_work_prompt", reset_work_prompt))
     app.add_handler(CommandHandler("vacuum_db", vacuum_db))
@@ -6788,6 +6894,7 @@ def main():
     print("/health — технический статус бота")
     print("/storage_status — размер базы и файлов")
     print("/backup_database — скачать резервную копию истории")
+    print("/cleanup_exports [days] CONFIRM — удалить старые готовые exports")
     print("/vacuum_db — сжать SQLite после очистки")
     print("/status — статус текущего чата")
     print("/global_status — статус всех чатов")
