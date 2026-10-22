@@ -1,6 +1,9 @@
 import unittest
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
+from unittest.mock import patch
 
 import bot
 
@@ -93,6 +96,36 @@ class UpcomingEventsTests(unittest.TestCase):
         events = bot.normalize_upcoming_events(items, now_local=now_local)
 
         self.assertEqual([event["title"] for event in events], ["Ещё впереди"])
+
+
+class BestServicePdfTests(unittest.TestCase):
+    def test_branded_pdf_renders_without_logo(self):
+        report_data = {
+            "summary": ["Проверка фирменного PDF с русским текстом."],
+            "tasks": [{
+                "task": "Запросить у партнёра подтверждение условий",
+                "owner": "не назначен",
+                "deadline": "не указан",
+                "context": "Нужен письменный ответ.",
+                "status": "новая",
+            }],
+            "upcoming_events": [],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "report.pdf"
+            with patch.object(bot, "AI_REPORT_LOGO_PATH", Path("missing-logo.png")):
+                bot.render_one_page_report_pdf(
+                    "",
+                    "Тестовый чат",
+                    "последние 7 дней",
+                    output_path,
+                    report_data=report_data,
+                )
+
+            self.assertTrue(output_path.exists())
+            self.assertGreater(output_path.stat().st_size, 1000)
+            self.assertEqual(output_path.read_bytes()[:4], b"%PDF")
 
 
 if __name__ == "__main__":

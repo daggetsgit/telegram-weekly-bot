@@ -109,6 +109,15 @@ OPENAI_REPORT_INCLUDE_IMAGES = os.getenv("OPENAI_REPORT_INCLUDE_IMAGES", "true")
 OPENAI_REPORT_MAX_IMAGES = get_nonnegative_int_env("OPENAI_REPORT_MAX_IMAGES", 6)
 OPENAI_REPORT_TWO_PASS = os.getenv("OPENAI_REPORT_TWO_PASS", "true").strip().lower() in ("1", "true", "yes", "on")
 AI_REPORT_LOGO_PATH = Path(os.getenv("AI_REPORT_LOGO_PATH", "assets/bs_logo.png"))
+BS_REPORT_BLUE = "#2A5177"
+BS_REPORT_BLUE_DARK = "#244B67"
+BS_REPORT_GREEN = "#91C651"
+BS_REPORT_INK = "#292F36"
+BS_REPORT_MUTED = "#626E7A"
+BS_REPORT_CARD = "#F4F6F7"
+BS_REPORT_CALLOUT = "#E7EEF2"
+BS_REPORT_CARD_LIGHT = "#F8FAFC"
+BS_REPORT_DIVIDER = "#B8C4CA"
 TELEGRAM_DROP_PENDING_UPDATES = os.getenv(
     "TELEGRAM_DROP_PENDING_UPDATES", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
@@ -4206,7 +4215,7 @@ def report_line_to_flowable(line: str, styles, font_name: str):
         return Paragraph(f"<b>{escape(stripped)}</b>", styles["ReportHeading"])
 
     if stripped.startswith(("- ", "* ", "• ")):
-        return Paragraph(f'<font color="#91C651">•</font> {escape(stripped[2:].strip())}', styles["ReportBody"])
+        return Paragraph(f'<font color="{BS_REPORT_GREEN}">•</font> {escape(stripped[2:].strip())}', styles["ReportBody"])
 
     return Paragraph(escape(stripped), styles["ReportBody"])
 
@@ -4235,9 +4244,10 @@ def add_markdownish_report_text(story, report_text: str, styles, font_name: str,
             column_count = max(1, len(table_rows[0]))
             table = Table(table_rows, colWidths=[available_width / column_count] * column_count, repeatRows=1)
             table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7EEF2")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2A5177")),
-                ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C4CA")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BS_REPORT_CALLOUT)),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(BS_REPORT_BLUE)),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor(BS_REPORT_CARD_LIGHT)]),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor(BS_REPORT_DIVIDER)),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 3),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 3),
@@ -4285,7 +4295,35 @@ def add_report_bullets(story, title: str, items, styles):
 
     add_report_heading(story, title, styles)
     for item in items:
-        story.append(Paragraph(f'<font color="#91C651">•</font> {escape(report_text_value(item))}', styles["ReportBody"]))
+        story.append(Paragraph(f'<font color="{BS_REPORT_GREEN}">•</font> {escape(report_text_value(item))}', styles["ReportBody"]))
+
+
+def add_summary_callout(story, items, styles, available_width: float):
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    from xml.sax.saxutils import escape
+
+    rows = report_list(items, 5)
+    if not rows:
+        return
+
+    content = [Paragraph("Краткий вывод", styles["CalloutTitle"])]
+    for item in rows:
+        content.append(Paragraph(
+            f'<font color="{BS_REPORT_GREEN}">•</font> {escape(report_text_value(item))}',
+            styles["ReportBody"],
+        ))
+
+    table = Table([[content]], colWidths=[available_width])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(BS_REPORT_CALLOUT)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3 * mm),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3 * mm),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5 * mm),
+    ]))
+    story.append(table)
 
 
 def add_key_topics(story, topics, styles):
@@ -4304,9 +4342,9 @@ def add_key_topics(story, topics, styles):
             if title and text:
                 story.append(Paragraph(f"<b>{escape(title)}.</b> {escape(text)}", styles["ReportBody"]))
             elif title or text:
-                story.append(Paragraph(f'<font color="#91C651">•</font> {escape(title or text)}', styles["ReportBody"]))
+                story.append(Paragraph(f'<font color="{BS_REPORT_GREEN}">•</font> {escape(title or text)}', styles["ReportBody"]))
         else:
-            story.append(Paragraph(f'<font color="#91C651">•</font> {escape(report_text_value(topic))}', styles["ReportBody"]))
+            story.append(Paragraph(f'<font color="{BS_REPORT_GREEN}">•</font> {escape(report_text_value(topic))}', styles["ReportBody"]))
 
 
 def add_tasks_table(story, tasks, styles, available_width: float):
@@ -4334,7 +4372,7 @@ def add_tasks_table(story, tasks, styles, available_width: float):
             context = ""
         task_cell = f"<b>{escape(task_text)}</b>"
         if context:
-            task_cell += f"<br/><font size=\"6.5\" color=\"#666666\">{escape(context)}</font>"
+            task_cell += f'<br/><font size="7" color="{BS_REPORT_MUTED}">{escape(context)}</font>'
 
         table_rows.append([
             Paragraph(task_cell, styles["TableCell"]),
@@ -4354,9 +4392,10 @@ def add_tasks_table(story, tasks, styles, available_width: float):
         repeatRows=1,
     )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7EEF2")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2A5177")),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C4CA")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BS_REPORT_CALLOUT)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(BS_REPORT_BLUE)),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor(BS_REPORT_CARD_LIGHT)]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor(BS_REPORT_DIVIDER)),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
@@ -4401,9 +4440,10 @@ def add_providers_table(story, providers, styles, available_width: float):
         repeatRows=1,
     )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7EEF2")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2A5177")),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C4CA")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BS_REPORT_CALLOUT)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(BS_REPORT_BLUE)),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor(BS_REPORT_CARD_LIGHT)]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor(BS_REPORT_DIVIDER)),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
@@ -4415,7 +4455,7 @@ def add_providers_table(story, providers, styles, available_width: float):
 
 
 def add_structured_report_text(story, report_data: dict, styles, available_width: float):
-    add_report_bullets(story, "Краткий вывод", report_data.get("summary"), styles)
+    add_summary_callout(story, report_data.get("summary"), styles, available_width)
     add_key_topics(story, report_data.get("key_topics"), styles)
     add_report_bullets(story, "Решения и статус", report_data.get("decisions"), styles)
 
@@ -4437,18 +4477,18 @@ def build_ai_report_header(title, chat_title, period_label, styles, available_wi
     meta_font = styles["ReportMeta"].fontName
     header_text = Paragraph(
         f"{escape(title)}<br/>"
-        f'<font name="{meta_font}" size="7.6" color="#626E7A">'
+        f'<font name="{meta_font}" size="7.6" color="{BS_REPORT_MUTED}">'
         f"Чат: {escape(str(chat_title))}<br/>"
         f"Период: {escape(str(period_label))}<br/>"
         f"Дата подготовки: {datetime.now(REPORT_TIMEZONE).strftime('%d.%m.%Y %H:%M')}"
         "</font>",
         styles["ReportTitle"],
     )
-    logo = get_ai_report_logo_flowable(29 * mm, 10 * mm)
+    logo = get_ai_report_logo_flowable(30 * mm, 10 * mm)
     if logo:
         header_table = Table(
             [[logo, header_text]],
-            colWidths=[33 * mm, available_width - 33 * mm],
+            colWidths=[35 * mm, available_width - 35 * mm],
         )
     else:
         header_table = Table([[header_text]], colWidths=[available_width])
@@ -4458,8 +4498,8 @@ def build_ai_report_header(title, chat_title, period_label, styles, available_wi
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#B8C4CA")),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.8, colors.HexColor(BS_REPORT_BLUE)),
     ]))
     return header_table
 
@@ -4501,12 +4541,12 @@ def add_upcoming_events_calendar(story, events, chat_title, period_label, styles
         if event_time != "не указано":
             date_time += f"<br/><b>{escape(event_time)}</b>"
         if event_timezone != "не указано":
-            date_time += f'<br/><font size="6.5" color="#626E7A">{escape(event_timezone)}</font>'
+            date_time += f'<br/><font size="6.5" color="{BS_REPORT_MUTED}">{escape(event_timezone)}</font>'
 
         purpose = escape(report_text_value(event.get("purpose"), "не указано"))
         owner = report_text_value(event.get("owner"), "не назначен")
         if owner and owner != "не назначен":
-            purpose += f'<br/><font size="6.5" color="#626E7A">Участник/организатор: {escape(owner)}</font>'
+            purpose += f'<br/><font size="6.5" color="{BS_REPORT_MUTED}">Участник/организатор: {escape(owner)}</font>'
 
         table_rows.append([
             Paragraph(date_time, styles["TableCell"]),
@@ -4528,9 +4568,10 @@ def add_upcoming_events_calendar(story, events, chat_title, period_label, styles
         repeatRows=1,
     )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E7EEF2")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2A5177")),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C4CA")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BS_REPORT_CALLOUT)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(BS_REPORT_BLUE)),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor(BS_REPORT_CARD_LIGHT)]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor(BS_REPORT_DIVIDER)),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
@@ -4555,11 +4596,11 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         name="ReportTitle",
         parent=styles["Title"],
         fontName=display_font_name,
-        fontSize=13,
-        leading=14.5,
+        fontSize=15.5,
+        leading=17.5,
         alignment=0,
         spaceAfter=1,
-        textColor="#2A5177",
+        textColor=BS_REPORT_BLUE,
     ))
     styles.add(ParagraphStyle(
         name="ReportMeta",
@@ -4567,7 +4608,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         fontName=font_name,
         fontSize=7.6,
         leading=8.8,
-        textColor="#626E7A",
+        textColor=BS_REPORT_MUTED,
         spaceAfter=1,
     ))
     styles.add(ParagraphStyle(
@@ -4578,7 +4619,7 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         leading=10.5,
         spaceBefore=3,
         spaceAfter=1,
-        textColor="#2A5177",
+        textColor=BS_REPORT_BLUE,
     ))
     styles.add(ParagraphStyle(
         name="CalendarTitle",
@@ -4587,32 +4628,41 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
         fontSize=11,
         leading=13,
         spaceAfter=2,
-        textColor="#2A5177",
+        textColor=BS_REPORT_BLUE,
     ))
     styles.add(ParagraphStyle(
         name="ReportBody",
         parent=styles["BodyText"],
         fontName=font_name,
-        fontSize=8,
-        leading=9.2,
+        fontSize=8.5,
+        leading=10.5,
         spaceAfter=1,
-        textColor="#292F36",
+        textColor=BS_REPORT_INK,
     ))
     styles.add(ParagraphStyle(
         name="TableCell",
         parent=styles["BodyText"],
         fontName=font_name,
-        fontSize=7.5,
-        leading=8.4,
-        textColor="#292F36",
+        fontSize=8,
+        leading=9.2,
+        textColor=BS_REPORT_INK,
     ))
     styles.add(ParagraphStyle(
         name="TableHeader",
         parent=styles["BodyText"],
         fontName=font_name,
-        fontSize=7.5,
-        leading=8.4,
-        textColor="#2A5177",
+        fontSize=8,
+        leading=9.2,
+        textColor=BS_REPORT_BLUE,
+    ))
+    styles.add(ParagraphStyle(
+        name="CalloutTitle",
+        parent=styles["Heading2"],
+        fontName=display_font_name,
+        fontSize=10,
+        leading=12,
+        spaceAfter=3,
+        textColor=BS_REPORT_BLUE,
     ))
 
     output_path = Path(output_path)
@@ -4649,10 +4699,10 @@ def render_one_page_report_pdf(report_text, chat_title, period_label, output_pat
     def draw_footer(canvas, doc_obj):
         canvas.saveState()
         canvas.setFont(font_name, 7)
-        canvas.setStrokeColor(colors.HexColor("#B8C4CA"))
+        canvas.setStrokeColor(colors.HexColor(BS_REPORT_DIVIDER))
         canvas.setLineWidth(0.5)
         canvas.line(doc_obj.leftMargin, 10 * mm, A4[0] - doc_obj.rightMargin, 10 * mm)
-        canvas.setFillColor(colors.HexColor("#626E7A"))
+        canvas.setFillColor(colors.HexColor(BS_REPORT_MUTED))
         footer = "Подготовлено на основе рабочего пакета Telegram"
         canvas.drawString(doc_obj.leftMargin, 7 * mm, footer)
         canvas.drawRightString(A4[0] - doc_obj.rightMargin, 7 * mm, f"· Стр. {doc_obj.page}")
