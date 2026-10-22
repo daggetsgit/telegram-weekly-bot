@@ -223,6 +223,8 @@ Transcript добавляется:
 
 `/cleanup_now` — принудительно запустить retention-очистку.
 
+`/backup_database` — скачать в личном чате администратора ZIP со snapshot базы, текущим custom prompt и transcript cache. Тяжёлые оригинальные вложения и готовые exports в этот backup не входят. После отправки временный ZIP удаляется с сервера.
+
 `/purge_chat <chat_id>` — удалить архив конкретного чата.
 
 `/purge_all_data CONFIRM` — удалить все сохранённые сообщения, файлы и экспорты.

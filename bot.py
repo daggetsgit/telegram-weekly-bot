@@ -909,6 +909,61 @@ def format_storage_status_text(data) -> str:
     )
 
 
+def create_metadata_backup():
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    snapshot_path = EXPORT_DIR / f"messages_backup_{timestamp}.sqlite3"
+    zip_path = EXPORT_DIR / f"telegram_history_backup_{timestamp}.zip"
+    custom_prompt_path = resolve_work_analysis_prompt_path(WORK_ANALYSIS_PROMPT_PATH)
+    transcript_count = 0
+
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+    source_conn = sqlite3.connect(DB_PATH)
+    backup_conn = sqlite3.connect(snapshot_path)
+    try:
+        source_conn.backup(backup_conn)
+    finally:
+        backup_conn.close()
+        source_conn.close()
+
+    try:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(snapshot_path, arcname="messages.db")
+
+            if custom_prompt_path.exists() and custom_prompt_path.is_file():
+                archive.write(
+                    custom_prompt_path,
+                    arcname="config/work_analysis_prompt.txt",
+                )
+
+            if TRANSCRIPTS_DIR.exists():
+                for transcript_path in sorted(TRANSCRIPTS_DIR.rglob("*")):
+                    if not transcript_path.is_file():
+                        continue
+                    archive.write(
+                        transcript_path,
+                        arcname=str(Path("transcripts") / transcript_path.relative_to(TRANSCRIPTS_DIR)),
+                    )
+                    transcript_count += 1
+
+            manifest = (
+                "Telegram Work Summary Bot metadata backup\n"
+                f"Generated UTC: {datetime.now(timezone.utc).isoformat()}\n"
+                "Includes: messages.db, current custom prompt (if present), transcript cache.\n"
+                "Excludes: original attachments and generated exports.\n"
+                f"File retention days: {FILE_RETENTION_DAYS}\n"
+                f"Message retention days: {MESSAGE_RETENTION_DAYS}\n"
+            )
+            archive.writestr("BACKUP_INFO.txt", manifest)
+    except Exception:
+        zip_path.unlink(missing_ok=True)
+        raise
+    finally:
+        snapshot_path.unlink(missing_ok=True)
+
+    return zip_path, transcript_count
+
+
 def vacuum_database():
     before_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
 
@@ -4763,6 +4818,7 @@ def get_private_admin_inline_keyboard():
         [InlineKeyboardButton("✅ Подтверждённые чаты", callback_data="admin:approved")],
         [InlineKeyboardButton("🕓 Ожидают подтверждения", callback_data="admin:pending")],
         [InlineKeyboardButton("💾 Статус хранилища", callback_data="admin:storage")],
+        [InlineKeyboardButton("🗄 Скачать резервную копию", callback_data="admin:backup")],
         [InlineKeyboardButton("🆘 Помощь", callback_data="admin:help")],
     ])
 
@@ -4808,6 +4864,9 @@ Legacy/manual: собрать пакет текущего чата за смен
 
 /storage_status
 Реальный размер базы, файлов, экспортов и data volume.
+
+/backup_database
+Скачать резервную копию истории, prompt и transcript cache без тяжёлых вложений.
 
 /prompt_status
 Проверить, какой work analysis prompt используется.
@@ -5760,6 +5819,37 @@ async def storage_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(format_storage_status_text(data))
 
 
+async def backup_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or chat.type != "private":
+        return
+    if not await admin_only(update):
+        return
+
+    await update.message.reply_text("Готовлю резервную копию истории...")
+    backup_path = None
+    try:
+        backup_path, transcript_count = create_metadata_backup()
+        sent = await send_document_safely(
+            update,
+            context,
+            backup_path,
+            caption=(
+                "Резервная копия истории Telegram-бота.\n"
+                f"Transcript cache files: {transcript_count}\n"
+                "Оригинальные вложения и готовые exports не включены."
+            ),
+        )
+        if not sent:
+            await update.message.reply_text("Не удалось отправить резервную копию.")
+    except Exception:
+        logging.exception("Could not create metadata backup")
+        await update.message.reply_text("Не удалось создать резервную копию. Проверьте логи Railway.")
+    finally:
+        if backup_path:
+            backup_path.unlink(missing_ok=True)
+
+
 async def vacuum_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await group_private_control_notice(update):
         return
@@ -5965,6 +6055,36 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             format_storage_status_text(get_storage_status_data()),
             reply_markup=get_private_admin_inline_keyboard(),
         )
+        return
+
+    if data == "admin:backup":
+        await query.message.edit_text("Готовлю резервную копию истории...")
+        backup_path = None
+        try:
+            backup_path, transcript_count = create_metadata_backup()
+            sent = await send_document_safely_to_chat(
+                context,
+                query.message.chat_id,
+                backup_path,
+                caption=(
+                    "Резервная копия истории Telegram-бота.\n"
+                    f"Transcript cache files: {transcript_count}\n"
+                    "Оригинальные вложения и готовые exports не включены."
+                ),
+            )
+            await query.message.edit_text(
+                "Резервная копия отправлена." if sent else "Не удалось отправить резервную копию.",
+                reply_markup=get_private_admin_inline_keyboard(),
+            )
+        except Exception:
+            logging.exception("Could not create metadata backup from admin menu")
+            await query.message.edit_text(
+                "Не удалось создать резервную копию. Проверьте логи Railway.",
+                reply_markup=get_private_admin_inline_keyboard(),
+            )
+        finally:
+            if backup_path:
+                backup_path.unlink(missing_ok=True)
         return
 
     if data == "admin:help":
@@ -6480,6 +6600,7 @@ def main():
     app.add_handler(CommandHandler("version", version))
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("storage_status", storage_status))
+    app.add_handler(CommandHandler("backup_database", backup_database))
     app.add_handler(CommandHandler("prompt_status", prompt_status))
     app.add_handler(CommandHandler("reset_work_prompt", reset_work_prompt))
     app.add_handler(CommandHandler("vacuum_db", vacuum_db))
@@ -6530,6 +6651,7 @@ def main():
     print("/version — версия и сборка бота")
     print("/health — технический статус бота")
     print("/storage_status — размер базы и файлов")
+    print("/backup_database — скачать резервную копию истории")
     print("/vacuum_db — сжать SQLite после очистки")
     print("/status — статус текущего чата")
     print("/global_status — статус всех чатов")

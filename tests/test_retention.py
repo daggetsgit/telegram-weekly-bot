@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -15,18 +16,28 @@ class RetentionTests(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.data_dir = self.root / "data"
         self.files_dir = self.data_dir / "files"
+        self.exports_dir = self.data_dir / "exports"
+        self.transcripts_dir = self.data_dir / "transcripts"
         self.data_dir.mkdir()
         self.files_dir.mkdir()
+        self.exports_dir.mkdir()
+        self.transcripts_dir.mkdir()
 
         self.originals = {
             "BASE_DIR": bot.BASE_DIR,
             "DATA_DIR": bot.DATA_DIR,
             "FILES_DIR": bot.FILES_DIR,
+            "EXPORT_DIR": bot.EXPORT_DIR,
+            "TRANSCRIPTS_DIR": bot.TRANSCRIPTS_DIR,
+            "WORK_ANALYSIS_PROMPT_PATH": bot.WORK_ANALYSIS_PROMPT_PATH,
             "DB_PATH": bot.DB_PATH,
         }
         bot.BASE_DIR = self.root
         bot.DATA_DIR = self.data_dir
         bot.FILES_DIR = self.files_dir
+        bot.EXPORT_DIR = self.exports_dir
+        bot.TRANSCRIPTS_DIR = self.transcripts_dir
+        bot.WORK_ANALYSIS_PROMPT_PATH = Path("data/config/work_analysis_prompt.txt")
         bot.DB_PATH = self.data_dir / "messages.db"
         bot.init_db()
 
@@ -106,6 +117,37 @@ class RetentionTests(unittest.TestCase):
             self.assertEqual(bot.get_nonnegative_int_env("TEST_RETENTION", 14), 14)
         with patch.dict(os.environ, {"TEST_RETENTION": "0"}):
             self.assertEqual(bot.get_nonnegative_int_env("TEST_RETENTION", 14), 0)
+
+    def test_metadata_backup_contains_database_prompt_and_transcripts(self):
+        self.add_message(1, age_days=1)
+        prompt_path = self.data_dir / "config" / "work_analysis_prompt.txt"
+        prompt_path.parent.mkdir()
+        prompt_path.write_text("Prompt {chat_title} {period_label}", encoding="utf-8")
+        transcript_path = self.transcripts_dir / "2026-10-22" / "voice.transcript.txt"
+        transcript_path.parent.mkdir()
+        transcript_path.write_text("Тестовая расшифровка", encoding="utf-8")
+
+        backup_path, transcript_count = bot.create_metadata_backup()
+
+        self.assertEqual(transcript_count, 1)
+        self.assertTrue(backup_path.exists())
+        with zipfile.ZipFile(backup_path) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {
+                    "messages.db",
+                    "config/work_analysis_prompt.txt",
+                    "transcripts/2026-10-22/voice.transcript.txt",
+                    "BACKUP_INFO.txt",
+                },
+            )
+            extracted_db = self.root / "restored.db"
+            extracted_db.write_bytes(archive.read("messages.db"))
+
+        conn = sqlite3.connect(extracted_db)
+        row_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        conn.close()
+        self.assertEqual(row_count, 1)
 
 
 if __name__ == "__main__":
