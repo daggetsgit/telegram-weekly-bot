@@ -3768,7 +3768,7 @@ def create_openai_report_response(client, response_input):
         )
     except Exception as e:
         error_text = str(e).lower()
-        if "temperature" not in error_text and "unsupported" not in error_text:
+        if "temperature" not in error_text:
             raise
         logging.warning("OpenAI report model rejected temperature; retrying without temperature.")
         return client.responses.create(

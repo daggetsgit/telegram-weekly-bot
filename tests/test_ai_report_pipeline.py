@@ -21,7 +21,48 @@ class FakeResponses:
         return SimpleNamespace(output_text=self.result_text)
 
 
+class SequencedResponses:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class AiReportImageInputTests(unittest.TestCase):
+    def test_temperature_error_retries_without_temperature(self):
+        response = SimpleNamespace(output_text="{}")
+        responses = SequencedResponses([
+            RuntimeError("Unsupported parameter: temperature"),
+            response,
+        ])
+
+        result = bot.create_openai_report_response(
+            SimpleNamespace(responses=responses),
+            [{"role": "user", "content": "test"}],
+        )
+
+        self.assertIs(result, response)
+        self.assertEqual(len(responses.calls), 2)
+        self.assertIn("temperature", responses.calls[0])
+        self.assertNotIn("temperature", responses.calls[1])
+
+    def test_unrelated_unsupported_error_is_not_retried(self):
+        responses = SequencedResponses([RuntimeError("unsupported image format")])
+
+        with self.assertRaisesRegex(RuntimeError, "unsupported image format"):
+            bot.create_openai_report_response(
+                SimpleNamespace(responses=responses),
+                [{"role": "user", "content": "test"}],
+            )
+
+        self.assertEqual(len(responses.calls), 1)
+
     def test_text_truncation_respects_exact_budget_and_keeps_both_ends(self):
         source = "BEGIN-" + ("x" * 500) + "-END"
 
