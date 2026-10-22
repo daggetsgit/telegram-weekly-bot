@@ -115,8 +115,32 @@ class AdminCallbackSafetyTests(unittest.TestCase):
         get_interval.assert_not_called()
         context.bot.send_message.assert_awaited_once_with(
             chat_id=100,
-            text="Этот AI PDF уже готовится. Дождитесь текущего отчёта.",
+            text="Другой AI PDF уже готовится. Дождитесь его завершения.",
         )
+
+    def test_control_center_button_is_shown_when_ai_reports_are_enabled(self):
+        with patch.object(bot, "OPENAI_REPORTS_ENABLED", True):
+            keyboard = bot.get_private_admin_inline_keyboard()
+
+        callback_data = [
+            button.callback_data
+            for row in keyboard.inline_keyboard
+            for button in row
+        ]
+        self.assertIn("admin:control", callback_data)
+
+    def test_control_center_callback_schedules_private_admin_report(self):
+        update, query = make_callback_update("admin:control:week")
+        context = SimpleNamespace()
+
+        with (
+            patch.object(bot, "ADMIN_USER_IDS", {1}),
+            patch.object(bot, "schedule_control_center_report") as schedule,
+        ):
+            asyncio.run(bot.admin_menu_callback(update, context))
+
+        schedule.assert_called_once_with(context, update, 100, "week")
+        query.message.edit_text.assert_awaited_once()
 
 
 if __name__ == "__main__":

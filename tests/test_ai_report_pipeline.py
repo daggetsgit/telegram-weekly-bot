@@ -208,6 +208,98 @@ class WorkPackageEmptyPeriodTests(unittest.TestCase):
             context.bot.send_message.await_args_list[-1].kwargs["text"],
         )
 
+    def test_work_package_waits_while_ai_report_is_running(self):
+        context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+        with (
+            patch.object(bot, "_ACTIVE_AI_REPORTS", {("active",)}),
+            patch.object(bot, "export_interval") as export_interval,
+        ):
+            asyncio.run(bot.send_work_package_for_source_chat(
+                context,
+                target_chat_id=10,
+                source_chat_id=-1001,
+                source_chat_title="Рабочий чат",
+                mode="shift",
+            ))
+
+        export_interval.assert_not_called()
+        self.assertIn(
+            "Дождитесь его завершения",
+            context.bot.send_message.await_args.kwargs["text"],
+        )
+
+
+class ControlCenterReportTests(unittest.TestCase):
+    def test_control_center_aggregates_only_approved_chats(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            export_a = root / "a.md"
+            export_b = root / "b.md"
+            index_a = root / "a-index.md"
+            index_b = root / "b-index.md"
+            export_a.write_text("Сообщения чата A", encoding="utf-8")
+            export_b.write_text("Сообщения чата B", encoding="utf-8")
+            index_a.write_text("Вложения чата A", encoding="utf-8")
+            index_b.write_text("Вложения чата B", encoding="utf-8")
+            output_pdf = root / "control.pdf"
+
+            chats = [
+                {"chat_id": -1001, "title": "Чат A", "type": "supergroup"},
+                {"chat_id": -1002, "title": "Чат B", "type": "group"},
+            ]
+            exports = {
+                -1001: (export_a, 3),
+                -1002: (export_b, 4),
+            }
+            indexes = {
+                -1001: (index_a, 1),
+                -1002: (index_b, 1),
+            }
+
+            with (
+                patch.object(bot, "get_approved_report_chats", return_value=chats),
+                patch.object(bot, "prepare_transcripts_for_period") as prepare,
+                patch.object(
+                    bot,
+                    "export_interval",
+                    side_effect=lambda *args, **kwargs: exports[kwargs["chat_id"]],
+                ),
+                patch.object(
+                    bot,
+                    "create_attachments_index",
+                    side_effect=lambda *args, **kwargs: indexes[kwargs["chat_id"]],
+                ),
+                patch.object(
+                    bot,
+                    "create_contact_sheets",
+                    side_effect=lambda *args, **kwargs: [root / f"{kwargs['chat_id']}.jpg"],
+                ),
+                patch.object(bot, "collect_important_document_texts_for_period", return_value=""),
+                patch.object(bot, "get_chatgpt_work_prompt", return_value="prompt"),
+                patch.object(
+                    bot,
+                    "generate_ai_one_page_report",
+                    return_value=("report", {"tasks": []}),
+                ) as generate,
+                patch.object(bot, "create_ai_pdf_output_path", return_value=output_pdf),
+                patch.object(bot, "render_one_page_report_pdf") as render,
+            ):
+                result = bot.build_control_center_report_artifact(
+                    "week",
+                    bot.datetime(2026, 10, 1, tzinfo=bot.timezone.utc),
+                    bot.datetime(2026, 10, 8, tzinfo=bot.timezone.utc),
+                    "7 дней",
+                )
+
+        self.assertEqual(result["message_count"], 7)
+        self.assertEqual(prepare.call_count, 2)
+        chat_export_text = generate.call_args.args[2]
+        self.assertIn("Рабочий чат: Чат A", chat_export_text)
+        self.assertIn("Рабочий чат: Чат B", chat_export_text)
+        self.assertEqual(len(generate.call_args.kwargs["contact_sheet_paths"]), 2)
+        render.assert_called_once()
+
     def test_week_package_stops_before_building_empty_files(self):
         context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
 

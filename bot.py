@@ -4946,10 +4946,10 @@ async def send_ai_pdf_report_for_source_chat(
         return
 
     report_key = (target_chat_id, source_chat_id, mode, focus_person_name or "")
-    if report_key in _ACTIVE_AI_REPORTS:
+    if _ACTIVE_AI_REPORTS:
         await context.bot.send_message(
             chat_id=target_chat_id,
-            text="Этот AI PDF уже готовится. Дождитесь текущего отчёта.",
+            text="Другой AI PDF уже готовится. Дождитесь его завершения.",
         )
         return
 
@@ -5117,6 +5117,233 @@ def schedule_ai_pdf_report(
         ),
         update=update,
         name=task_name,
+    )
+
+
+def combine_control_center_sections(sections, total_budget: int, label: str) -> str:
+    if not sections:
+        return ""
+    per_section_budget = max(1000, total_budget // len(sections))
+    return "".join(
+        limit_report_input_text(
+            f"{label}_{index}",
+            section,
+            per_section_budget,
+        )
+        for index, section in enumerate(sections, start=1)
+    )
+
+
+def build_control_center_report_artifact(
+    mode: str,
+    since_dt: datetime,
+    until_dt: datetime,
+    period_label: str,
+):
+    chats = get_approved_report_chats()
+    chat_exports = []
+    attachment_indexes = []
+    document_texts = []
+    first_contact_sheets = []
+    extra_contact_sheets = []
+    total_messages = 0
+
+    for chat in chats:
+        chat_id = chat["chat_id"]
+        chat_title = chat["title"]
+        prepare_transcripts_for_period(since_dt, until_dt, chat_id=chat_id)
+
+        export_path, message_count = export_interval(
+            since_dt,
+            until_dt,
+            chat_id=chat_id,
+            chat_title_for_filename=chat_title,
+            period_label=period_label,
+        )
+        if message_count == 0:
+            continue
+
+        total_messages += message_count
+        chat_exports.append(
+            f"\n\n# Рабочий чат: {chat_title}\n\n"
+            + export_path.read_text(encoding="utf-8")
+        )
+
+        attachments_path, _attachment_count = create_attachments_index(
+            1,
+            chat_id=chat_id,
+            chat_title_for_filename=chat_title,
+            since_dt=since_dt,
+            until_dt=until_dt,
+            period_label=period_label,
+        )
+        attachment_indexes.append(
+            f"\n\n# Вложения чата: {chat_title}\n\n"
+            + attachments_path.read_text(encoding="utf-8")
+        )
+
+        sheets = create_contact_sheets(
+            1,
+            chat_id=chat_id,
+            chat_title_for_filename=chat_title,
+            since_dt=since_dt,
+            until_dt=until_dt,
+            period_label=period_label,
+        )
+        if sheets:
+            first_contact_sheets.append(sheets[0])
+            extra_contact_sheets.extend(sheets[1:])
+
+        extracted_documents = collect_important_document_texts_for_period(
+            since_dt,
+            until_dt,
+            chat_id,
+        )
+        if extracted_documents:
+            document_texts.append(
+                f"\n\n# Документы чата: {chat_title}\n\n{extracted_documents}"
+            )
+
+    if total_messages == 0:
+        return {"message_count": 0, "pdf_path": None, "report_data": None}
+
+    source_title = "Все подтверждённые рабочие чаты"
+    prompt_text = get_chatgpt_work_prompt(source_title, 1, period_label)
+    report_focus = """Межчатовый контрольный центр для руководителя и рабочей команды.
+Сопоставь все подтверждённые чаты и выбери только то, что требует внимания или действия.
+В каждой задаче и существенном риске обязательно указывай исходный рабочий чат в context.
+Приоритет: конкретные поручения, неназначенные ответственные, ожидание ответа внешней стороны, сроки, блокеры, важные суммы и ближайшие встречи.
+Не объединяй похожие задачи из разных чатов, если у них разные стороны или ожидаемые результаты.
+Не превращай отчёт в обзор переписки: он должен отвечать, что горит, кто кому что должен и какой результат нужен."""
+
+    contact_sheet_paths = (
+        first_contact_sheets + extra_contact_sheets
+    )[:OPENAI_REPORT_MAX_IMAGES]
+    max_input = max(1000, OPENAI_REPORT_MAX_INPUT_CHARS)
+    combined_chat_exports = combine_control_center_sections(
+        chat_exports,
+        int(max_input * 0.45),
+        "control_chat",
+    )
+    combined_attachment_indexes = combine_control_center_sections(
+        attachment_indexes,
+        int(max_input * 0.20),
+        "control_attachments",
+    )
+    combined_document_texts = combine_control_center_sections(
+        document_texts,
+        int(max_input * 0.20),
+        "control_documents",
+    )
+    report_text, report_data = generate_ai_one_page_report(
+        source_title,
+        period_label,
+        combined_chat_exports,
+        combined_attachment_indexes,
+        prompt_text,
+        contact_sheet_paths=contact_sheet_paths,
+        important_document_texts=combined_document_texts,
+        report_focus=report_focus,
+    )
+
+    pdf_path = create_ai_pdf_output_path("control_center", mode)
+    render_one_page_report_pdf(
+        report_text,
+        source_title,
+        period_label,
+        pdf_path,
+        report_data=report_data,
+        report_title="Контрольный центр",
+    )
+    return {
+        "message_count": total_messages,
+        "pdf_path": pdf_path,
+        "report_data": report_data,
+    }
+
+
+async def send_control_center_report(
+    context: ContextTypes.DEFAULT_TYPE,
+    target_chat_id: int,
+    mode: str,
+):
+    if not OPENAI_REPORTS_ENABLED:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="Контрольный центр недоступен: AI PDF-отчёты отключены.",
+        )
+        return
+    if not OPENAI_API_KEY:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="Контрольный центр недоступен: не задан OPENAI_API_KEY.",
+        )
+        return
+
+    report_key = (target_chat_id, "control-center", mode)
+    if _ACTIVE_AI_REPORTS:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="Другой AI PDF уже готовится. Дождитесь его завершения.",
+        )
+        return
+
+    try:
+        since_dt, until_dt, period_label = get_ai_report_interval(mode)
+    except ValueError as e:
+        await context.bot.send_message(chat_id=target_chat_id, text=str(e))
+        return
+
+    _ACTIVE_AI_REPORTS.add(report_key)
+    try:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"Собираю межчатовый контрольный центр.\nПериод: {period_label}",
+        )
+        result = await asyncio.to_thread(
+            build_control_center_report_artifact,
+            mode,
+            since_dt,
+            until_dt,
+            period_label,
+        )
+        if result["message_count"] == 0:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=f"За выбранный период в подтверждённых чатах сообщений не найдено.\nПериод: {period_label}",
+            )
+            return
+        if result["report_data"] is None:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text="Структура сводного AI-отчёта не распознана, PDF создан в fallback-режиме.",
+            )
+        await send_document_safely_to_chat(
+            context,
+            target_chat_id,
+            result["pdf_path"],
+            caption=f"Контрольный центр Best Service — {period_label}",
+        )
+    except Exception as e:
+        logging.exception("Could not create control center report")
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"Не удалось собрать контрольный центр. Код ошибки: {safe_error_code(e)}.",
+        )
+    finally:
+        _ACTIVE_AI_REPORTS.discard(report_key)
+
+
+def schedule_control_center_report(
+    context: ContextTypes.DEFAULT_TYPE,
+    update: Update,
+    target_chat_id: int,
+    mode: str,
+):
+    return context.application.create_task(
+        send_control_center_report(context, target_chat_id, mode),
+        update=update,
+        name=f"control-center-{mode}",
     )
 
 
@@ -5311,7 +5538,7 @@ def get_private_admin_keyboard():
 
 
 def get_private_admin_inline_keyboard():
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("📦 Собрать рабочий пакет", callback_data="admin:reports")],
         [InlineKeyboardButton("✅ Подтверждённые чаты", callback_data="admin:approved")],
         [InlineKeyboardButton("🕓 Ожидают подтверждения", callback_data="admin:pending")],
@@ -5319,7 +5546,10 @@ def get_private_admin_inline_keyboard():
         [InlineKeyboardButton("🗄 Скачать резервную копию", callback_data="admin:backup")],
         [InlineKeyboardButton("🧹 Очистить старые экспорты", callback_data="admin:exports_cleanup_prompt")],
         [InlineKeyboardButton("🆘 Помощь", callback_data="admin:help")],
-    ])
+    ]
+    if OPENAI_REPORTS_ENABLED:
+        rows.insert(1, [InlineKeyboardButton("🔥 Контрольный центр", callback_data="admin:control")])
+    return InlineKeyboardMarkup(rows)
 
 
 def get_private_help_text() -> str:
@@ -5340,6 +5570,7 @@ def get_private_help_text() -> str:
 Если AI PDF включён в настройках, через те же кнопки доступны:
 - краткий PDF-отчёт за смену, 7 дней, с прошлого понедельника или с 1 числа;
 - отдельный отчёт по задачам выбранного участника;
+- межчатовый «Контрольный центр» по всем подтверждённым чатам;
 - календарная страница с будущими встречами, если они найдены в источниках.
 
 Рабочий пакет включает:
@@ -6213,6 +6444,13 @@ def get_participant_report_label(participant: dict) -> str:
 
 
 async def send_work_package_for_source_chat(context: ContextTypes.DEFAULT_TYPE, target_chat_id: int, source_chat_id: int, source_chat_title: str, mode: str):
+    if _ACTIVE_AI_REPORTS:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="Сейчас готовится AI PDF. Дождитесь его завершения перед сборкой рабочего пакета.",
+        )
+        return
+
     if mode in ("shift", "prevweek", "month", "all"):
         if mode == "shift":
             since_dt, until_dt, period_label = get_current_work_shift_interval()
@@ -6676,6 +6914,38 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if data == "admin:reports":
         await show_report_chats_selection(query.message, edit=True)
+        return
+
+    if data == "admin:control":
+        await query.message.edit_text(
+            "Контрольный центр\n\n"
+            "Собирает единый Best Service PDF по всем подтверждённым чатам: задачи, "
+            "неназначенные ответственные, ожидания, риски и ближайшие встречи.\n\n"
+            "Выбери период:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Последние 7 дней", callback_data="admin:control:week")],
+                [InlineKeyboardButton("С прошлого понедельника", callback_data="admin:control:prevweek")],
+                [InlineKeyboardButton("С 1 числа", callback_data="admin:control:month")],
+                [InlineKeyboardButton("↩️ В кабинет", callback_data="admin:home")],
+            ]),
+        )
+        return
+
+    if data.startswith("admin:control:"):
+        mode = data.rsplit(":", 1)[-1]
+        if mode not in {"week", "prevweek", "month"}:
+            await query.message.reply_text("Неизвестный период контрольного центра.")
+            return
+        schedule_control_center_report(
+            context,
+            update,
+            query.message.chat_id,
+            mode,
+        )
+        await query.message.edit_text(
+            "Контрольный центр запущен. PDF придёт отдельным сообщением; бот продолжает принимать команды.",
+            reply_markup=get_private_admin_inline_keyboard(),
+        )
         return
 
     if data == "admin:pending":
