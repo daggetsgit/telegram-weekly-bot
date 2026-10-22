@@ -707,8 +707,8 @@ async def notify_admins_about_pending_chat(context: ContextTypes.DEFAULT_TYPE, c
                 text=message_text,
                 reply_markup=keyboard,
             )
-        except Exception as e:
-            print(f"Could not notify admin {admin_id} about chat {chat.id}: {e}")
+        except Exception:
+            logging.exception("Could not notify admin %s about chat %s", admin_id, chat.id)
 
 
 async def ensure_chat_approved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -5689,8 +5689,8 @@ async def chat_approval_callback(update: Update, context: ContextTypes.DEFAULT_T
                 chat_id=chat_id,
                 text="Чат подтверждён администратором. Теперь бот будет сохранять сообщения и файлы для архива."
             )
-        except Exception as e:
-            print(f"Could not send approval message to chat {chat_id}: {e}")
+        except Exception:
+            logging.exception("Could not send approval message to chat %s", chat_id)
 
     elif action == "reject_chat":
         ok = set_chat_status(chat_id, "rejected", None)
@@ -5710,8 +5710,8 @@ async def chat_approval_callback(update: Update, context: ContextTypes.DEFAULT_T
                 chat_id=chat_id,
                 text="Чат не подтверждён администратором. Бот не будет сохранять сообщения и файлы из этого чата."
             )
-        except Exception as e:
-            print(f"Could not send rejection message to chat {chat_id}: {e}")
+        except Exception:
+            logging.exception("Could not send rejection message to chat %s", chat_id)
 
     else:
         await query.edit_message_text("Неизвестное действие.")
@@ -5794,8 +5794,8 @@ async def approve_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id,
             text="Чат подтверждён администратором. Теперь бот будет сохранять сообщения и файлы для архива."
         )
-    except Exception as e:
-        print(f"Could not send approval message to chat {chat_id}: {e}")
+    except Exception:
+        logging.exception("Could not send approval message to chat %s", chat_id)
 
 
 async def reject_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5827,8 +5827,8 @@ async def reject_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id,
             text="Чат не подтверждён администратором. Бот не будет сохранять сообщения и файлы из этого чата."
         )
-    except Exception as e:
-        print(f"Could not send rejection message to chat {chat_id}: {e}")
+    except Exception:
+        logging.exception("Could not send rejection message to chat %s", chat_id)
 
 
 async def remove_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7162,8 +7162,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{author} | {detect_message_type(message)}{file_part}{preview_part}"
         )
 
-    except Exception as e:
-        print(f"Error while saving message {message.message_id}: {e}")
+    except Exception:
+        logging.exception(
+            "Error while saving message %s in chat %s",
+            message.message_id,
+            message.chat.id,
+        )
 
 
 async def setup_bot_commands(app: Application):
