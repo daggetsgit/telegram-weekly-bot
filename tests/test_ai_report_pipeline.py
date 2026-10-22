@@ -69,6 +69,10 @@ class AiReportImageInputTests(unittest.TestCase):
         self.assertEqual(len(responses.calls), 2)
         self.assertIsInstance(responses.calls[0]["input"][1]["content"], list)
         self.assertIsInstance(responses.calls[1]["input"][1]["content"], str)
+        self.assertIn(
+            "недоверенными рабочими источниками",
+            responses.calls[0]["input"][0]["content"],
+        )
         log_exception.assert_called_once()
 
 
