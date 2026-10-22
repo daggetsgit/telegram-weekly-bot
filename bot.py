@@ -8297,6 +8297,15 @@ def format_weekly_report_status_text(now_local=None, state=None):
         and bool(OPENAI_API_KEY)
         and bool(ADMIN_USER_IDS)
     )
+    pending_text = ""
+    due = get_due_weekly_report_period(now_local=now_local, state=state) if ready else None
+    if due:
+        if _ACTIVE_AI_REPORTS or _ACTIVE_ARCHIVE_QUESTIONS:
+            pending_text = "Текущий выпуск: выполняется анализ или ожидается его завершение.\n"
+        elif weekly_auto_report_retry_is_due(due[0], now_local=now_local, state=state):
+            pending_text = "Текущий выпуск: ожидает запуска планировщиком.\n"
+        else:
+            pending_text = "Текущий выпуск: ожидает повторной попытки после ошибки.\n"
     return (
         "Еженедельный автоматический отчёт\n\n"
         f"Статус: {'включён' if WEEKLY_AUTO_REPORT_ENABLED else 'выключен'}\n"
@@ -8304,7 +8313,8 @@ def format_weekly_report_status_text(now_local=None, state=None):
         f"Модель анализа: {OPENAI_REPORT_MODEL}\n"
         f"Расписание: пятница, {WEEKLY_AUTO_REPORT_HOUR:02d}:{WEEKLY_AUTO_REPORT_MINUTE:02d} {timezone_name}\n"
         f"Повтор после ошибки: через {WEEKLY_AUTO_REPORT_RETRY_MINUTES} мин.\n"
-        f"Следующий запуск: {next_schedule.strftime('%d.%m.%Y %H:%M')} {timezone_name}\n"
+        f"{pending_text}"
+        f"Следующий плановый запуск: {next_schedule.strftime('%d.%m.%Y %H:%M')} {timezone_name}\n"
         f"Последний успешный период до: {state.get('last_period_until') or 'ещё не запускался'}\n"
         f"Последняя успешная отправка: {state.get('last_success_at') or 'ещё не запускалась'}"
     )

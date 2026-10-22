@@ -414,6 +414,8 @@ If the private file is missing, the bot uses `prompts/work_analysis_prompt.examp
 DEPLOYMENT_RU.md
 ```
 
+The private dashboard button `🗓 Пятничный отчёт` shows report readiness, schedule, model, and any pending retry. The next regular slot is displayed separately from a current unfinished report.
+
 ## Current version
 
 ```text
@@ -422,7 +424,7 @@ Build: control-center-weekly-reports
 Build date: 2026-10-23
 ```
 
-Enabled features:
+Available features (OpenAI reports and automatic delivery require configuration):
 
 ```text
 - approved chats
@@ -436,6 +438,14 @@ Enabled features:
 - transcript cache
 - transcript files in ZIP
 - full archive ZIP
+- Best Service AI PDF reports with task tables and image input
+- two-pass analysis and final report generation
+- participant task reports and future meeting calendar
+- cross-chat control center and cached latest tasks
+- questions to the saved chat archive
+- automatic Friday PDF delivery with retry cooldown
+- private weekly report status button
+- metadata backup and persistent message history
 - cleanup / purge commands
 - storage diagnostics
 - quiet group mode

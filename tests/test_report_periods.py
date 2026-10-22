@@ -173,6 +173,64 @@ class ReportPeriodTests(unittest.TestCase):
         self.assertEqual(saved["last_scheduled_at"], scheduled_at.isoformat())
         self.assertEqual(saved["last_period_until"], until_utc.isoformat())
 
+    def test_failed_delivery_keeps_previous_boundary_and_records_attempt(self):
+        now_local = datetime(2026, 10, 23, 20, 0, tzinfo=ZoneInfo("Asia/Bangkok"))
+        previous_boundary = "2026-10-16T13:00:00+00:00"
+        app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "weekly.json"
+            with (
+                patch.object(bot, "WEEKLY_AUTO_REPORT_STATE_PATH", state_path),
+                patch.object(bot, "WEEKLY_AUTO_REPORT_ENABLED", True),
+                patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
+                patch.object(bot, "OPENAI_API_KEY", "test-key"),
+                patch.object(bot, "ADMIN_USER_IDS", {100}),
+                patch.object(bot, "_ACTIVE_AI_REPORTS", set()),
+                patch.object(bot, "_ACTIVE_ARCHIVE_QUESTIONS", set()),
+                patch.object(bot, "build_control_center_report_artifact", return_value={
+                    "message_count": 12,
+                    "pdf_path": Path("report.pdf"),
+                    "report_data": {"tasks": []},
+                }) as build,
+                patch.object(bot, "send_document_safely_to_chat", AsyncMock(return_value=False)),
+            ):
+                bot.save_weekly_auto_report_state({
+                    "last_scheduled_at": "2026-10-16T20:00:00+07:00",
+                    "last_period_until": previous_boundary,
+                })
+                sent = asyncio.run(bot.run_weekly_auto_report_if_due(app, now_local=now_local))
+                saved = bot.load_weekly_auto_report_state()
+                retry = asyncio.run(bot.run_weekly_auto_report_if_due(
+                    app, now_local=now_local + timedelta(minutes=1)
+                ))
+
+        self.assertFalse(sent)
+        self.assertFalse(retry)
+        self.assertEqual(saved["last_period_until"], previous_boundary)
+        self.assertEqual(saved["last_scheduled_at"], "2026-10-16T20:00:00+07:00")
+        self.assertEqual(saved["last_attempt_at"], now_local.isoformat())
+        build.assert_called_once()
+
+    def test_weekly_status_shows_pending_retry_instead_of_only_next_week(self):
+        now_local = datetime(2026, 10, 23, 20, 5, tzinfo=ZoneInfo("Asia/Bangkok"))
+        state = {
+            "last_attempt_scheduled_at": "2026-10-23T20:00:00+07:00",
+            "last_attempt_at": "2026-10-23T20:01:00+07:00",
+        }
+        with (
+            patch.object(bot, "WEEKLY_AUTO_REPORT_ENABLED", True),
+            patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "ADMIN_USER_IDS", {100}),
+            patch.object(bot, "WEEKLY_AUTO_REPORT_RETRY_MINUTES", 15),
+            patch.object(bot, "_ACTIVE_AI_REPORTS", set()),
+            patch.object(bot, "_ACTIVE_ARCHIVE_QUESTIONS", set()),
+        ):
+            text = bot.format_weekly_report_status_text(now_local=now_local, state=state)
+
+        self.assertIn("ожидает повторной попытки после ошибки", text)
+        self.assertIn("Следующий плановый запуск: 30.10.2026 20:00", text)
+
 
 class UpcomingEventsTests(unittest.TestCase):
     def test_only_future_dated_events_are_kept(self):
