@@ -69,6 +69,55 @@ class AdminCallbackSafetyTests(unittest.TestCase):
         self.assertTrue(query.answer.await_args.kwargs["show_alert"])
         query.message.edit_text.assert_not_awaited()
 
+    def test_ai_pdf_report_is_scheduled_as_background_task(self):
+        scheduled = []
+
+        class FakeApplication:
+            def create_task(self, coroutine, update=None, name=None):
+                scheduled.append((update, name))
+                coroutine.close()
+                return SimpleNamespace()
+
+        context = SimpleNamespace(application=FakeApplication())
+        update = SimpleNamespace(update_id=123)
+
+        bot.schedule_ai_pdf_report(
+            context,
+            update,
+            100,
+            -1001,
+            "Рабочий чат",
+            "week",
+        )
+
+        self.assertEqual(scheduled, [(update, "ai-pdf--1001-week")])
+
+    def test_duplicate_ai_pdf_report_is_rejected_before_build(self):
+        context = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+        key = (100, -1001, "week", "")
+
+        with (
+            patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "_ACTIVE_AI_REPORTS", {key}),
+            patch.object(bot, "get_ai_report_interval") as get_interval,
+        ):
+            asyncio.run(
+                bot.send_ai_pdf_report_for_source_chat(
+                    context,
+                    100,
+                    -1001,
+                    "Рабочий чат",
+                    "week",
+                )
+            )
+
+        get_interval.assert_not_called()
+        context.bot.send_message.assert_awaited_once_with(
+            chat_id=100,
+            text="Этот AI PDF уже готовится. Дождитесь текущего отчёта.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import json
@@ -150,6 +151,7 @@ FILE_RETENTION_DAYS = get_nonnegative_int_env(
 )
 MESSAGE_RETENTION_DAYS = get_nonnegative_int_env("MESSAGE_RETENTION_DAYS", 0)
 _LAST_RETENTION_CLEANUP_MONOTONIC = None
+_ACTIVE_AI_REPORTS = set()
 
 DATA_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
@@ -4943,39 +4945,100 @@ async def send_ai_pdf_report_for_source_chat(
         )
         return
 
+    report_key = (target_chat_id, source_chat_id, mode, focus_person_name or "")
+    if report_key in _ACTIVE_AI_REPORTS:
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="Этот AI PDF уже готовится. Дождитесь текущего отчёта.",
+        )
+        return
+
     try:
         since_dt, until_dt, period_label = get_ai_report_interval(mode, chat_id=source_chat_id)
     except ValueError as e:
         await context.bot.send_message(chat_id=target_chat_id, text=str(e))
         return
 
-    report_focus = build_person_tasks_report_focus(focus_person_name) if focus_person_name else ""
-    report_kind = f"отчёт по задачам: {focus_person_name}" if focus_person_name else "краткий AI PDF-отчёт"
+    _ACTIVE_AI_REPORTS.add(report_key)
+    try:
+        report_focus = build_person_tasks_report_focus(focus_person_name) if focus_person_name else ""
+        report_kind = f"отчёт по задачам: {focus_person_name}" if focus_person_name else "краткий AI PDF-отчёт"
 
-    await context.bot.send_message(
-        chat_id=target_chat_id,
-        text=f"Готовлю {report_kind} для чата: {source_chat_title}\nПериод: {period_label}",
-    )
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"Готовлю {report_kind} для чата: {source_chat_title}\nПериод: {period_label}",
+        )
 
+        result = await asyncio.to_thread(
+            build_ai_pdf_report_artifact,
+            source_chat_id,
+            source_chat_title,
+            mode,
+            since_dt,
+            until_dt,
+            period_label,
+            focus_person_name,
+            report_focus,
+        )
+
+        if result["message_count"] == 0:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=f"За выбранный период в чате «{source_chat_title}» сообщений не найдено.\nПериод: {period_label}",
+            )
+            return
+
+        if result["report_data"] is None:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text="Структура AI-отчёта не распознана, PDF создан в fallback-режиме.",
+            )
+
+        await send_document_safely_to_chat(
+            context,
+            target_chat_id,
+            result["pdf_path"],
+            caption=(
+                f"Задачи участника: {focus_person_name}. {source_chat_title} — {period_label}"
+                if focus_person_name
+                else f"Краткий AI PDF-отчёт. {source_chat_title} — {period_label}"
+            ),
+        )
+    except Exception as e:
+        logging.exception("Could not create AI PDF report")
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"Не удалось создать AI PDF. Код ошибки: {safe_error_code(e)}. Подробности записаны в лог.",
+        )
+    finally:
+        _ACTIVE_AI_REPORTS.discard(report_key)
+
+
+def build_ai_pdf_report_artifact(
+    source_chat_id: int,
+    source_chat_title: str,
+    mode: str,
+    since_dt: datetime,
+    until_dt: datetime,
+    period_label: str,
+    focus_person_name: str = None,
+    report_focus: str = "",
+):
     prepare_transcripts_for_period(
         since_dt,
         until_dt,
         chat_id=source_chat_id,
     )
 
-    export_path, _message_count = export_interval(
+    export_path, message_count = export_interval(
         since_dt,
         until_dt,
         chat_id=source_chat_id,
         chat_title_for_filename=source_chat_title,
         period_label=period_label,
     )
-    if _message_count == 0:
-        await context.bot.send_message(
-            chat_id=target_chat_id,
-            text=f"За выбранный период в чате «{source_chat_title}» сообщений не найдено.\nПериод: {period_label}",
-        )
-        return
+    if message_count == 0:
+        return {"message_count": 0, "pdf_path": None, "report_data": None}
 
     attachments_index_path, _attachment_count = create_attachments_index(
         1,
@@ -5026,21 +5089,34 @@ async def send_ai_pdf_report_for_source_chat(
         report_title=report_title,
     )
 
-    if report_data is None:
-        await context.bot.send_message(
-            chat_id=target_chat_id,
-            text="Структура AI-отчёта не распознана, PDF создан в fallback-режиме.",
-        )
+    return {
+        "message_count": message_count,
+        "pdf_path": pdf_path,
+        "report_data": report_data,
+    }
 
-    await send_document_safely_to_chat(
-        context,
-        target_chat_id,
-        pdf_path,
-        caption=(
-            f"Задачи участника: {focus_person_name}. {source_chat_title} — {period_label}"
-            if focus_person_name
-            else f"Краткий AI PDF-отчёт. {source_chat_title} — {period_label}"
+
+def schedule_ai_pdf_report(
+    context: ContextTypes.DEFAULT_TYPE,
+    update: Update,
+    target_chat_id: int,
+    source_chat_id: int,
+    source_chat_title: str,
+    mode: str,
+    focus_person_name: str = None,
+):
+    task_name = f"ai-pdf-{source_chat_id}-{mode}"
+    return context.application.create_task(
+        send_ai_pdf_report_for_source_chat(
+            context,
+            target_chat_id,
+            source_chat_id,
+            source_chat_title,
+            mode,
+            focus_person_name=focus_person_name,
         ),
+        update=update,
+        name=task_name,
     )
 
 
@@ -6851,8 +6927,9 @@ async def participant_report_callback(update: Update, context: ContextTypes.DEFA
                 await query.message.reply_text("Участник или чат больше не найден. Обнови список отчётов.")
                 return
 
-            await send_ai_pdf_report_for_source_chat(
+            schedule_ai_pdf_report(
                 context,
+                update,
                 query.message.chat_id,
                 chat_id,
                 chat_title,
@@ -6915,8 +6992,9 @@ async def work_package_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         if data.startswith("workpdf:"):
-            await send_ai_pdf_report_for_source_chat(
+            schedule_ai_pdf_report(
                 context,
+                update,
                 query.message.chat_id,
                 source_chat_id,
                 source_chat_title,
