@@ -129,7 +129,26 @@ class AdminCallbackSafetyTests(unittest.TestCase):
         ]
         self.assertIn("admin:control", callback_data)
         self.assertIn("admin:control_latest", callback_data)
+        self.assertIn("admin:weekly_status", callback_data)
         self.assertIn("admin:ask", callback_data)
+
+    def test_weekly_status_callback_is_private_admin_only(self):
+        update, query = make_callback_update("admin:weekly_status")
+        context = SimpleNamespace()
+
+        with (
+            patch.object(bot, "ADMIN_USER_IDS", {1}),
+            patch.object(bot, "WEEKLY_AUTO_REPORT_ENABLED", True),
+            patch.object(bot, "OPENAI_REPORTS_ENABLED", True),
+            patch.object(bot, "OPENAI_API_KEY", "test-key"),
+            patch.object(bot, "load_weekly_auto_report_state", return_value={}),
+        ):
+            asyncio.run(bot.admin_menu_callback(update, context))
+
+        query.message.edit_text.assert_awaited_once()
+        rendered_text = query.message.edit_text.await_args.args[0]
+        self.assertIn("Готов к запуску: да", rendered_text)
+        self.assertIn("Модель анализа:", rendered_text)
 
     def test_control_center_callback_schedules_private_admin_report(self):
         update, query = make_callback_update("admin:control:week")

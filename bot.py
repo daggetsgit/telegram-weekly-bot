@@ -6083,6 +6083,7 @@ def get_private_admin_inline_keyboard():
         [InlineKeyboardButton("🕓 Ожидают подтверждения", callback_data="admin:pending")],
         [InlineKeyboardButton("💾 Статус хранилища", callback_data="admin:storage")],
         [InlineKeyboardButton("🗄 Скачать резервную копию", callback_data="admin:backup")],
+        [InlineKeyboardButton("🗓 Пятничный отчёт", callback_data="admin:weekly_status")],
         [InlineKeyboardButton("🧹 Очистить старые экспорты", callback_data="admin:exports_cleanup_prompt")],
         [InlineKeyboardButton("🆘 Помощь", callback_data="admin:help")],
     ]
@@ -7486,6 +7487,15 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    if data == "admin:weekly_status":
+        await query.message.edit_text(
+            format_weekly_report_status_text(),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("↩️ В кабинет", callback_data="admin:home")],
+            ]),
+        )
+        return
+
     if data == "admin:ask":
         chats = get_approved_report_chats()
         if not chats:
@@ -8276,14 +8286,10 @@ async def setup_bot_commands(app: Application):
         )
 
 
-async def weekly_report_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if not chat or chat.type != "private" or not await admin_only(update):
-        return
-
-    now_local = datetime.now(REPORT_TIMEZONE)
+def format_weekly_report_status_text(now_local=None, state=None):
+    now_local = now_local or datetime.now(REPORT_TIMEZONE)
     _latest_schedule, next_schedule = get_weekly_report_schedule(now_local)
-    state = load_weekly_auto_report_state()
+    state = state if isinstance(state, dict) else load_weekly_auto_report_state()
     timezone_name = getattr(REPORT_TIMEZONE, "key", str(REPORT_TIMEZONE))
     ready = (
         WEEKLY_AUTO_REPORT_ENABLED
@@ -8291,16 +8297,25 @@ async def weekly_report_status(update: Update, context: ContextTypes.DEFAULT_TYP
         and bool(OPENAI_API_KEY)
         and bool(ADMIN_USER_IDS)
     )
-    await update.message.reply_text(
+    return (
         "Еженедельный автоматический отчёт\n\n"
         f"Статус: {'включён' if WEEKLY_AUTO_REPORT_ENABLED else 'выключен'}\n"
         f"Готов к запуску: {'да' if ready else 'нет'}\n"
+        f"Модель анализа: {OPENAI_REPORT_MODEL}\n"
         f"Расписание: пятница, {WEEKLY_AUTO_REPORT_HOUR:02d}:{WEEKLY_AUTO_REPORT_MINUTE:02d} {timezone_name}\n"
         f"Повтор после ошибки: через {WEEKLY_AUTO_REPORT_RETRY_MINUTES} мин.\n"
         f"Следующий запуск: {next_schedule.strftime('%d.%m.%Y %H:%M')} {timezone_name}\n"
         f"Последний успешный период до: {state.get('last_period_until') or 'ещё не запускался'}\n"
         f"Последняя успешная отправка: {state.get('last_success_at') or 'ещё не запускалась'}"
     )
+
+
+async def weekly_report_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or chat.type != "private" or not await admin_only(update):
+        return
+
+    await update.message.reply_text(format_weekly_report_status_text())
 
 
 async def application_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
