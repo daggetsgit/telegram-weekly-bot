@@ -1,5 +1,8 @@
+import asyncio
 import logging
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import bot
 
@@ -47,6 +50,20 @@ class SecretLoggingSafetyTests(unittest.TestCase):
 
         self.assertNotIn(token, rendered)
         self.assertIn("[REDACTED_TELEGRAM_TOKEN]", rendered)
+
+    def test_application_error_handler_logs_only_update_id(self):
+        update = SimpleNamespace(update_id=321, message=SimpleNamespace(text="sensitive message"))
+        error = RuntimeError("safe failure")
+        context = SimpleNamespace(error=error)
+
+        with patch.object(bot.logging, "error") as log_error:
+            asyncio.run(bot.application_error_handler(update, context))
+
+        log_error.assert_called_once()
+        args, kwargs = log_error.call_args
+        self.assertEqual(args[1], 321)
+        self.assertNotIn("sensitive message", str(log_error.call_args))
+        self.assertEqual(kwargs["exc_info"][1], error)
 
 
 if __name__ == "__main__":

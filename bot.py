@@ -7295,6 +7295,20 @@ async def setup_bot_commands(app: Application):
     )
 
 
+async def application_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    error = context.error
+    exc_info = None
+    if error is not None:
+        exc_info = (type(error), error, error.__traceback__)
+
+    update_id = getattr(update, "update_id", None)
+    logging.error(
+        "Unhandled Telegram update error (update_id=%s)",
+        update_id if update_id is not None else "unknown",
+        exc_info=exc_info,
+    )
+
+
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("Не найден TELEGRAM_BOT_TOKEN в файле .env")
@@ -7345,6 +7359,7 @@ def main():
     app.add_handler(CallbackQueryHandler(chat_approval_callback, pattern="^(approve_chat|reject_chat):"))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+    app.add_error_handler(application_error_handler)
 
     print("Бот запущен. Нажми Ctrl+C для остановки.")
     print(f"Version: {BOT_VERSION} | build: {BOT_BUILD_NAME} | commit: {DEPLOY_COMMIT_SHA[:12]}")
